@@ -1,0 +1,23 @@
+I am writing a radio scanner in Python, which uses the RTL SDR Blog V4. The driver is installed and so is pyrtlsdr. My attempts so far are in this folder.
+
+We will start a new file, with everything self-contained, to perform the following:
+
+We will start by reading in the config in config.yaml, and choose a band, giving us its start frequency, end frequency, channel spacing, and channel width. For now we will choose "pmr"
+
+The centre frequency for the SDR device should be calculated based on these, and the total required bandwidth needed to scan on the SDR device.
+
+We should set this centre frequency and bandwidth based on the channels we need to scan.
+
+Then the scanning process should start:
+
+It should scan the band (covering all channels) asynchronously and yield data to a handler after the specified duration (band_time_slice_ms).
+
+The handler should assess the SNR of each channel in the band. The code should maintain a `state` for each channel, either True (on) or False (off).
+
+If the SNR rises above a defined threshold for channel, that channel's state should switch to True (on). When the channel falls below the threshold, it should switch to False (off).
+
+When a channel changes state (on or off), print a line to the standard output saying "Channel {$channel} {$state}".
+
+Later, we will add functionality to start buffering and recording the demodulated audio for active channels, and writing them to file. Keep that in mind and comment where this will happen, but do not code it yet.
+
+Start a new file called main.py for this new code. Use the code in the attached files as guidance on the process, but do not assume it is the best. Ignore anything which pertains to visualizations - we don't need that.

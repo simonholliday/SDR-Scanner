@@ -1,0 +1,8 @@
+# Python bytecode
+__pycache__/
+
+# Audio directory
+audio/
+
+# Custom rules file
+.clinerules
