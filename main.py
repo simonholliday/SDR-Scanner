@@ -2,6 +2,7 @@ import asyncio
 import collections
 import datetime
 import logging
+import math
 import numpy
 import numpy.typing
 import os
@@ -376,7 +377,34 @@ def _decimate_audio (
 		Tuple of (decimated_samples, updated_state)
 	"""
 
-	decimation_factor = int(sample_rate / audio_sample_rate)
+	sr = int(round(sample_rate))
+	ar = int(audio_sample_rate)
+	if sr <= 0 or ar <= 0:
+		return signal.astype(numpy.float32), state
+
+	if sr == ar:
+		return signal.astype(numpy.float32), state
+
+	# If the ratio isn't an integer, we need rational resampling instead of decimation.
+	decimation_factor = sr // ar
+
+	if sr % ar != 0:
+		# Use rational resampling when rates are not integer-divisible.
+		# We keep a small overlap from the previous block to reduce boundary clicks.
+		g = math.gcd(sr, ar)
+		up = ar // g
+		down = sr // g
+		prev = state.get('resample_prev', numpy.array([], dtype=signal.dtype))
+		if prev.size > 0:
+			signal = numpy.concatenate([prev, signal])
+		resampled = scipy.signal.resample_poly(signal, up, down).astype(numpy.float32)
+		if prev.size > 0:
+			# Drop samples corresponding to the prepended overlap.
+			out_prev = int(numpy.ceil(prev.size * up / down))
+			resampled = resampled[out_prev:]
+		# Store tail for the next block.
+		state['resample_prev'] = signal[-64:].copy()
+		return resampled, state
 
 	if decimation_factor <= 1:
 		return signal.astype(numpy.float32), state
@@ -396,7 +424,7 @@ def _decimate_audio (
 		state['decimate_sos'], signal, zi=state['decimate_zi']
 	)
 
-	# Downsample with phase continuity
+	# Downsample with phase continuity for stream-safe decimation.
 	start_idx = state['decimate_phase']
 	audio_samples = filtered[start_idx::decimation_factor].astype(numpy.float32)
 
@@ -914,6 +942,11 @@ class RadioScanner:
 			# Settling delay between measurements
 			time.sleep(0.2)
 
+		# Bail out if no valid measurements were captured
+		if not freq_correction_ppm_list:
+			logger.warning("Calibration failed: no valid measurements collected")
+			return
+
 		# Validate signal strength (peak should be significantly above noise floor)
 		# Use the last magnitude_db array from the loop
 		avg_peak_mag = numpy.mean(peak_magnitudes)
@@ -972,7 +1005,13 @@ class RadioScanner:
 		self.sdr = rtlsdr.RtlSdr()
 		self.sdr.sample_rate = self.sample_rate
 		self.sdr.center_freq = self.center_freq
-		self.sdr.gain = self.sdr_gain_db
+		if self.sdr_gain_db == 'auto' or self.sdr_gain_db is None:
+			try:
+				self.sdr.gain = 'auto'
+			except Exception:
+				self.sdr.gain = None
+		else:
+			self.sdr.gain = self.sdr_gain_db
 		logger.info("SDR device configured successfully")
 
 		# Calibrate frequency offset if calibration frequency is provided
@@ -1010,7 +1049,11 @@ class RadioScanner:
 		if self.loop and self.sample_queue:
 			# Thread-safe: schedule queue put on the event loop
 			# Make a copy to avoid buffer reuse issues
-			self.loop.call_soon_threadsafe(self.sample_queue.put_nowait, samples.copy())
+			try:
+				self.loop.call_soon_threadsafe(self.sample_queue.put_nowait, samples.copy())
+			except asyncio.QueueFull:
+				# Drop samples if consumer is behind to avoid callback thread exceptions
+				logger.debug("Sample queue full; dropping samples")
 
 	async def _sample_band_async (self) -> typing.AsyncGenerator[numpy.typing.NDArray[numpy.complex64], None]:
 
