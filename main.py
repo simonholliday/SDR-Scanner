@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import datetime
+import importlib
 import logging
 import math
 import numpy
@@ -37,6 +38,217 @@ class ChannelSpec:
 	) -> None:
 
 		pass
+
+class RtlSdrDevice:
+
+	def __init__ (self, device_index: int = 0) -> None:
+
+		self._device = rtlsdr.RtlSdr(device_index)
+
+	@property
+	def sample_rate (self) -> float:
+
+		return self._device.sample_rate
+
+	@sample_rate.setter
+	def sample_rate (self, value: float) -> None:
+
+		self._device.sample_rate = value
+
+	@property
+	def center_freq (self) -> float:
+
+		return self._device.center_freq
+
+	@center_freq.setter
+	def center_freq (self, value: float) -> None:
+
+		self._device.center_freq = value
+
+	@property
+	def gain (self) -> float | str | None:
+
+		return self._device.gain
+
+	@gain.setter
+	def gain (self, value: float | str | None) -> None:
+
+		self._device.gain = value
+
+	def read_samples_async (self, callback: typing.Callable, num_samples: int) -> None:
+
+		self._device.read_samples_async(callback, num_samples)
+
+	def cancel_read_async (self) -> None:
+
+		self._device.cancel_read_async()
+
+	def close (self) -> None:
+
+		self._device.close()
+
+class HackRfDevice:
+
+	def __init__ (self, device_index: int = 0) -> None:
+
+		self._module = self._import_hackrf_module()
+		self._device = self._create_device()
+		self._device_index = device_index
+		self._rx_wrapper: typing.Callable | None = None
+		self._sample_rate: float | None = None
+		self._center_freq: float | None = None
+		self._gain_db: float | None = None
+
+		self._open_device()
+
+	def _import_hackrf_module (self) -> typing.Any:
+
+		for module_name in ('python_hackrf', 'hackrf', 'pyhackrf'):
+			try:
+				return importlib.import_module(module_name)
+			except Exception:
+				continue
+
+		raise RuntimeError("HackRF bindings not found; install python_hackrf")
+
+	def _create_device (self) -> typing.Any:
+
+		for class_name in ('HackRF', 'HackRf', 'Hackrf'):
+			if hasattr(self._module, class_name):
+				return getattr(self._module, class_name)()
+
+		raise RuntimeError("HackRF bindings missing device class")
+
+	def _open_device (self) -> None:
+
+		if hasattr(self._device, 'open_by_index'):
+			self._device.open_by_index(self._device_index)
+			return
+
+		if hasattr(self._device, 'open'):
+			try:
+				self._device.open(self._device_index)
+			except TypeError:
+				self._device.open()
+			return
+
+		raise RuntimeError("HackRF device open method not found")
+
+	@property
+	def sample_rate (self) -> float | None:
+
+		return self._sample_rate
+
+	@sample_rate.setter
+	def sample_rate (self, value: float) -> None:
+
+		self._sample_rate = value
+		if hasattr(self._device, 'set_sample_rate'):
+			self._device.set_sample_rate(value)
+		elif hasattr(self._device, 'sample_rate'):
+			self._device.sample_rate = value
+
+	@property
+	def center_freq (self) -> float | None:
+
+		return self._center_freq
+
+	@center_freq.setter
+	def center_freq (self, value: float) -> None:
+
+		self._center_freq = value
+		if hasattr(self._device, 'set_freq'):
+			self._device.set_freq(value)
+		elif hasattr(self._device, 'set_frequency'):
+			self._device.set_frequency(value)
+		elif hasattr(self._device, 'center_freq'):
+			self._device.center_freq = value
+
+	@property
+	def gain (self) -> float | None:
+
+		return self._gain_db
+
+	@gain.setter
+	def gain (self, value: float | str | None) -> None:
+
+		self._gain_db = None if value == 'auto' else value
+
+		if self._gain_db is None:
+			return
+
+		# Best-effort mapping for HackRF gain controls.
+		if hasattr(self._device, 'set_gain'):
+			self._device.set_gain(self._gain_db)
+		elif hasattr(self._device, 'set_vga_gain'):
+			self._device.set_vga_gain(int(self._gain_db))
+		if hasattr(self._device, 'set_lna_gain'):
+			self._device.set_lna_gain(int(self._gain_db))
+
+	def _convert_samples (self, data: typing.Any) -> numpy.typing.NDArray[numpy.complex64]:
+
+		if isinstance(data, numpy.ndarray):
+			if numpy.iscomplexobj(data):
+				return data.astype(numpy.complex64, copy=False)
+			data = data.astype(numpy.float32, copy=False)
+			if data.size % 2 != 0:
+				data = data[:-1]
+			iq = data.reshape(-1, 2)
+			return (iq[:, 0] + 1j * iq[:, 1]).astype(numpy.complex64)
+
+		if isinstance(data, (bytes, bytearray, memoryview)):
+			raw = numpy.frombuffer(data, dtype=numpy.int8)
+			if raw.size % 2 != 0:
+				raw = raw[:-1]
+			iq = raw.astype(numpy.float32).reshape(-1, 2)
+			return ((iq[:, 0] / 128.0) + 1j * (iq[:, 1] / 128.0)).astype(numpy.complex64)
+
+		raise RuntimeError("Unsupported HackRF sample buffer type")
+
+	def _extract_transfer_buffer (self, args: tuple[typing.Any, ...]) -> typing.Any | None:
+
+		if len(args) == 0:
+			return None
+
+		if len(args) == 1:
+			obj = args[0]
+			if hasattr(obj, 'buffer'):
+				return obj.buffer
+			if hasattr(obj, 'data'):
+				return obj.data
+			return obj
+
+		return args[0]
+
+	def read_samples_async (self, callback: typing.Callable, _num_samples: int) -> None:
+
+		def wrapper (*args: typing.Any) -> int:
+			buffer_obj = self._extract_transfer_buffer(args)
+			if buffer_obj is None:
+				return 0
+			samples = self._convert_samples(buffer_obj)
+			callback(samples, None)
+			return 0
+
+		self._rx_wrapper = wrapper
+		if hasattr(self._device, 'start_rx'):
+			self._device.start_rx(wrapper)
+		elif hasattr(self._device, 'start_rx_streaming'):
+			self._device.start_rx_streaming(wrapper)
+		else:
+			raise RuntimeError("HackRF start_rx method not found")
+
+	def cancel_read_async (self) -> None:
+
+		if hasattr(self._device, 'stop_rx'):
+			self._device.stop_rx()
+		elif hasattr(self._device, 'stop_rx_streaming'):
+			self._device.stop_rx_streaming()
+
+	def close (self) -> None:
+
+		if hasattr(self._device, 'close'):
+			self._device.close()
 
 class ChannelRecorder:
 
@@ -88,9 +300,11 @@ class ChannelRecorder:
 
 		# Calculate maximum buffer size in samples
 		max_buffer_samples = int(buffer_size_seconds * audio_sample_rate)
+		self.max_buffer_samples = max(0, max_buffer_samples)
 
-		# Create circular buffer (deque with maxlen drops oldest when full)
-		self.audio_buffer: collections.deque = collections.deque(maxlen=max_buffer_samples)
+		# Chunked buffer to reduce per-sample Python overhead.
+		self.audio_buffer: collections.deque[numpy.typing.NDArray[numpy.float32]] = collections.deque()
+		self.audio_buffer_samples = 0
 
 		# Recording start time
 		self.start_time = datetime.datetime.now()
@@ -185,12 +399,49 @@ class ChannelRecorder:
 			return
 
 		with self._buffer_lock:
-			if self.audio_buffer.maxlen is not None:
-				space_available = self.audio_buffer.maxlen - len(self.audio_buffer)
-				if len(samples) > space_available:
-					dropped = len(samples) - space_available
+			if self.max_buffer_samples <= 0:
+				return
+
+			incoming_len = len(samples)
+			if incoming_len == 0:
+				return
+
+			if incoming_len >= self.max_buffer_samples:
+				dropped = self.audio_buffer_samples + (incoming_len - self.max_buffer_samples)
+				if dropped > 0:
 					logger.warning(f"Channel {self.channel_index}: Buffer overflow, dropping {dropped} oldest samples")
-			self.audio_buffer.extend(samples)
+				self.audio_buffer.clear()
+				self.audio_buffer_samples = 0
+				samples = samples[-self.max_buffer_samples:]
+				self.audio_buffer.append(samples)
+				self.audio_buffer_samples = len(samples)
+				return
+
+			overflow = self.audio_buffer_samples + incoming_len - self.max_buffer_samples
+			if overflow > 0:
+				self._drop_oldest_samples(overflow)
+				logger.warning(f"Channel {self.channel_index}: Buffer overflow, dropping {overflow} oldest samples")
+
+			self.audio_buffer.append(samples)
+			self.audio_buffer_samples += incoming_len
+
+	def _drop_oldest_samples(self, count: int) -> None:
+
+		"""
+		Drop a number of samples from the start of the chunked buffer.
+		"""
+
+		remaining = count
+		while remaining > 0 and self.audio_buffer:
+			chunk = self.audio_buffer[0]
+			if len(chunk) <= remaining:
+				self.audio_buffer.popleft()
+				self.audio_buffer_samples -= len(chunk)
+				remaining -= len(chunk)
+			else:
+				self.audio_buffer[0] = chunk[remaining:]
+				self.audio_buffer_samples -= remaining
+				remaining = 0
 
 	async def _flush_to_disk_periodically (self) -> None:
 
@@ -216,10 +467,14 @@ class ChannelRecorder:
 		"""
 
 		with self._buffer_lock:
-			if len(self.audio_buffer) == 0:
+			if self.audio_buffer_samples == 0:
 				return
-			samples_to_write = numpy.array(self.audio_buffer, dtype=numpy.float32)
+			if len(self.audio_buffer) == 1:
+				samples_to_write = self.audio_buffer[0]
+			else:
+				samples_to_write = numpy.concatenate(list(self.audio_buffer)).astype(numpy.float32, copy=False)
 			self.audio_buffer.clear()
+			self.audio_buffer_samples = 0
 
 		await asyncio.get_running_loop().run_in_executor(None, self._write_samples_to_wav, samples_to_write)
 
@@ -256,7 +511,7 @@ class ChannelRecorder:
 			self.flush_task.cancel()
 
 			try:
-				self.flush_task.result(timeout=5)
+				await asyncio.wait_for(asyncio.wrap_future(self.flush_task), timeout=5)
 			except Exception:
 				pass
 
@@ -607,7 +862,13 @@ class RadioScanner:
 	# Number of FFT segments for Welch averaging
 	WELCH_SEGMENTS = 8
 
-	def __init__ (self, config_path: str = 'config.yaml', band_name: str = 'pmr') -> None:
+	def __init__ (
+		self,
+		config_path: str = 'config.yaml',
+		band_name: str = 'pmr',
+		device_type: str = 'rtlsdr',
+		device_index: int = 0
+	) -> None:
 
 		"""
 		Initialize the scanner with configuration
@@ -615,9 +876,13 @@ class RadioScanner:
 		Args:
 			config_path: Path to the YAML configuration file
 			band_name: Name of the band to scan (default: 'pmr')
+			device_type: SDR type ('rtlsdr' or 'hackrf')
+			device_index: Device index for the selected SDR type
 		"""
 		self.config = self._load_config(config_path)
 		self.band_name = band_name
+		self.device_type = device_type
+		self.device_index = device_index
 		self.band_config = self.config['bands'][band_name]
 		self.scanner_config = self.config['scanner']
 		self.recording_config = self.config.get('recording', {})
@@ -684,7 +949,7 @@ class RadioScanner:
 		self.channel_recorders: dict[float, ChannelRecorder] = {}
 
 		# SDR device
-		self.sdr: rtlsdr.RtlSdr | None = None
+		self.sdr: typing.Any | None = None
 
 		# Pre-computed values (initialized in _precompute_fft_params)
 		self.samples_per_slice: int = 0
@@ -862,7 +1127,7 @@ class RadioScanner:
 		first_channel = sorted_channels[0]
 		first_channel_low = first_channel - self.channel_width / 2
 
-		# Use the lower of: (observable minimum) or (band start - margin)
+		# Use the higher of: (observable minimum) or (band start - margin)
 		noise_start_freq = max(observable_min_freq, self.freq_start - self.band_edge_margin_hz)
 
 		band_start_idx = numpy.searchsorted(self.freqs, noise_start_freq)
@@ -898,7 +1163,7 @@ class RadioScanner:
 		last_channel = sorted_channels[-1]
 		last_channel_high = last_channel + self.channel_width / 2
 
-		# Use the higher of: (observable maximum) or (band end + margin)
+		# Use the lower of: (observable maximum) or (band end + margin)
 		noise_end_freq = min(observable_max_freq, self.freq_end + self.band_edge_margin_hz)
 
 		last_channel_idx = numpy.searchsorted(self.freqs, last_channel_high)
@@ -1039,12 +1304,22 @@ class RadioScanner:
 		else:
 			logger.info("SDR calibration complete - no correction needed")
 
+	def _create_sdr_device (self) -> typing.Any:
+
+		device_type = self.device_type.lower()
+		if device_type in ('rtl', 'rtlsdr', 'rtl-sdr'):
+			return RtlSdrDevice(self.device_index)
+		if device_type in ('hackrf', 'hackrf-one', 'hackrfone'):
+			return HackRfDevice(self.device_index)
+
+		raise ValueError(f"Unsupported device_type: {self.device_type}")
+
 	def _setup_sdr (self) -> None:
 
 		"""Configure the SDR device with calculated parameters"""
 
 		logger.info("Setting up SDR device...")
-		self.sdr = rtlsdr.RtlSdr()
+		self.sdr = self._create_sdr_device()
 		self.sdr.sample_rate = self.sample_rate
 		self.sdr.center_freq = self.center_freq
 		if self.sdr_gain_db == 'auto' or self.sdr_gain_db is None:
@@ -1058,7 +1333,7 @@ class RadioScanner:
 
 		# Calibrate frequency offset if calibration frequency is provided
 		calibration_freq = self.scanner_config.get('calibration_frequency_hz', None)
-		if calibration_freq is not None:
+		if calibration_freq is not None and hasattr(self.sdr, 'read_samples'):
 			self._calibrate_sdr(calibration_freq)
 
 		# Now that we know sample rate is set, precompute FFT parameters
@@ -1113,6 +1388,28 @@ class RadioScanner:
 			samples = await self.sample_queue.get()
 			yield samples
 
+	def _iter_windowed_segments(
+		self,
+		samples: numpy.typing.NDArray[numpy.complex64]
+	) -> typing.Iterator[numpy.typing.NDArray[numpy.complex64]]:
+
+		"""
+		Yield windowed FFT segments with 50% overlap.
+		"""
+
+		segment_size = self.fft_size
+		hop_size = segment_size // 2
+		n_segments = (len(samples) - segment_size) // hop_size + 1
+
+		if n_segments <= 0:
+			return
+
+		for i in range(n_segments):
+			start = i * hop_size
+			end = start + segment_size
+			segment = samples[start:end]
+			yield segment * self.window
+
 	def _calculate_psd_welch (self, samples: numpy.typing.NDArray[numpy.complex64]) -> numpy.typing.NDArray[numpy.float64]:
 
 		"""
@@ -1126,31 +1423,17 @@ class RadioScanner:
 			psd_db: Averaged power spectral density (dB), already shifted
 		"""
 
-		n_samples = len(samples)
-		segment_size = self.fft_size
-
 		# Accumulator for averaged PSD
-		psd_accumulator = numpy.zeros(segment_size, dtype=numpy.float64)
+		psd_accumulator = numpy.zeros(self.fft_size, dtype=numpy.float64)
+		n_segments = 0
 
-		# Process segments with 50% overlap for better averaging
-		hop_size = segment_size // 2
-		n_segments = (n_samples - segment_size) // hop_size + 1
-
-		if n_segments <= 0:
-			raise ValueError("Not enough samples for Welch PSD")
-
-		for i in range(n_segments):
-
-			start = i * hop_size
-			end = start + segment_size
-			segment = samples[start:end]
-
-			# Apply pre-computed window
-			windowed = segment * self.window
-
-			# FFT and power
+		for windowed in self._iter_windowed_segments(samples):
 			fft_result = numpy.fft.fft(windowed)
 			psd_accumulator += numpy.abs(fft_result) ** 2
+			n_segments += 1
+
+		if n_segments == 0:
+			raise ValueError("Not enough samples for Welch PSD")
 
 		# Average and convert to dB
 		psd_avg = psd_accumulator / n_segments
@@ -1171,20 +1454,8 @@ class RadioScanner:
 		Uses the same segment size and overlap as Welch.
 		"""
 
-		n_samples = len(samples)
-		segment_size = self.fft_size
-		hop_size = segment_size // 2
-		n_segments = (n_samples - segment_size) // hop_size + 1
-
-		if n_segments <= 0:
-			return []
-
 		segment_psd = []
-		for i in range(n_segments):
-			start = i * hop_size
-			end = start + segment_size
-			segment = samples[start:end]
-			windowed = segment * self.window
+		for windowed in self._iter_windowed_segments(samples):
 			fft_result = numpy.fft.fft(windowed)
 			psd_db = 10 * numpy.log10(numpy.abs(fft_result) ** 2 + 1e-12)
 			segment_psd.append(numpy.fft.fftshift(psd_db))
@@ -1224,6 +1495,53 @@ class RadioScanner:
 				return min(len(samples), i * hop_size)
 
 		return len(samples)
+
+	def _prepare_channel_transition(
+		self,
+		samples: numpy.typing.NDArray[numpy.complex64],
+		channel_freq: float,
+		channel_index: int,
+		snr_db: float,
+		is_active: bool,
+		current_state: bool,
+		segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None,
+		loop: asyncio.AbstractEventLoop
+	) -> tuple[int, int, int, bool, bool]:
+
+		"""
+		Compute trim boundaries and update state for a channel transition.
+		Returns trim_start, trim_end, sample_offset, turning_on, turning_off.
+		"""
+
+		turning_on = is_active and not current_state
+		turning_off = (not is_active) and current_state
+
+		trim_start = 0
+		trim_end = len(samples)
+		sample_offset = 0
+
+		if turning_on or turning_off:
+			transition_idx = self._find_transition_index(samples, channel_freq, turning_on, segment_psd)
+			transition_idx = max(0, min(len(samples), transition_idx))
+			if turning_on:
+				trim_start = transition_idx
+				sample_offset = transition_idx
+			else:
+				trim_end = transition_idx
+
+			self.channel_states[channel_freq] = is_active
+			state_str = "ON" if is_active else "OFF"
+			channel_mhz = channel_freq / 1e6
+			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB)")
+
+			if turning_on and self.can_record:
+				if channel_freq in self.channel_filter_zi:
+					del self.channel_filter_zi[channel_freq]
+				if channel_freq in self.channel_demod_state:
+					del self.channel_demod_state[channel_freq]
+				self._start_channel_recording(channel_freq, channel_index, loop)
+
+		return trim_start, trim_end, sample_offset, turning_on, turning_off
 
 	def _get_channel_power (self, psd_db: numpy.typing.NDArray[numpy.float64], channel_freq: float) -> float:
 
@@ -1452,34 +1770,16 @@ class RadioScanner:
 			is_active = metrics['is_active']
 			current_state = metrics['current_state']
 
-			turning_on = is_active and not current_state
-			turning_off = (not is_active) and current_state
-
-			trim_start = 0
-			trim_end = len(samples)
-			sample_offset = 0
-
-			if turning_on or turning_off:
-				transition_idx = self._find_transition_index(samples, channel_freq, turning_on, segment_psd)
-				transition_idx = max(0, min(len(samples), transition_idx))
-				if turning_on:
-					trim_start = transition_idx
-					sample_offset = transition_idx
-				else:
-					trim_end = transition_idx
-
-				self.channel_states[channel_freq] = is_active
-				state_str = "ON" if is_active else "OFF"
-				channel_mhz = channel_freq / 1e6
-				logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB)")
-
-				if turning_on:
-					if self.can_record:
-						if channel_freq in self.channel_filter_zi:
-							del self.channel_filter_zi[channel_freq]
-						if channel_freq in self.channel_demod_state:
-							del self.channel_demod_state[channel_freq]
-						self._start_channel_recording(channel_freq, channel_index, loop)
+			trim_start, trim_end, sample_offset, turning_on, turning_off = self._prepare_channel_transition(
+				samples,
+				channel_freq,
+				channel_index,
+				snr_db,
+				is_active,
+				current_state,
+				segment_psd,
+				loop
+			)
 
 			# Feed audio samples to active recordings (include trimmed transition chunks).
 			if (is_active or turning_off) and channel_freq in self.channel_recorders:
@@ -1588,7 +1888,11 @@ class RadioScanner:
 			await self._cleanup_sdr()
 
 
-async def main (band_name:str=None) -> None:
+async def main (
+	band_name: str | None = None,
+	device_type: str = 'rtlsdr',
+	device_index: int = 0
+) -> None:
 
 	config_path = 'config.yaml'
 
@@ -1608,10 +1912,15 @@ async def main (band_name:str=None) -> None:
 
 		band_name = active_bands[0]
 
-	scanner = RadioScanner(config_path=config_path, band_name=band_name)
+	scanner = RadioScanner(
+		config_path=config_path,
+		band_name=band_name,
+		device_type=device_type,
+		device_index=device_index
+	)
 
 	await scanner.scan()
 
 if __name__ == '__main__':
 
-	asyncio.run(main(band_name='pmr'))
+	asyncio.run(main(band_name='pmr', device_type='rtlsdr', device_index=0))

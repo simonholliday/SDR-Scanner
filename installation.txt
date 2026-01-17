@@ -23,7 +23,9 @@ sudo shutdown -r now
 
 sudo apt install libsndfile1 libsndfile1-dev
 sudo apt install python3-setuptools
+sudo apt install -y python3-dev
+sudo apt install -y libhackrf-dev hackrf pkg-config build-essential
+sudo apt install hackrf
 
 pip install -r requirements.txt
-
 
