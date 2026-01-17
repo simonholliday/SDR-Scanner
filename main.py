@@ -433,6 +433,46 @@ def _decimate_audio (
 
 	return audio_samples, state
 
+def _apply_fade(
+	audio: numpy.typing.NDArray[numpy.float32],
+	sample_rate: int,
+	fade_in_ms: float | None,
+	fade_out_ms: float | None
+) -> numpy.typing.NDArray[numpy.float32]:
+
+	"""
+	Apply linear fade-in/out to a 1-D audio array.
+	If either duration is None, fading is disabled.
+	"""
+
+	if fade_in_ms is None or fade_out_ms is None:
+		return audio
+
+	n_samples = len(audio)
+	if n_samples == 0:
+		return audio
+
+	fade_in_len = int(sample_rate * (fade_in_ms / 1000.0))
+	fade_out_len = int(sample_rate * (fade_out_ms / 1000.0))
+
+	fade_in_len = min(fade_in_len, n_samples)
+	fade_out_len = min(fade_out_len, n_samples - fade_in_len)
+
+	if fade_in_len > 0:
+		# Smoothstep curve for an S-shaped fade-in.
+		ramp_in = numpy.linspace(0.0, 1.0, fade_in_len, endpoint=True, dtype=audio.dtype)
+		ramp_in = ramp_in * ramp_in * (3.0 - 2.0 * ramp_in)
+		audio[:fade_in_len] *= ramp_in
+
+	if fade_out_len > 0:
+		# Smoothstep curve for an S-shaped fade-out.
+		ramp_out = numpy.linspace(0.0, 1.0, fade_out_len, endpoint=True, dtype=audio.dtype)
+		ramp_out = ramp_out * ramp_out * (3.0 - 2.0 * ramp_out)
+		ramp_out = 1.0 - ramp_out
+		audio[-fade_out_len:] *= ramp_out
+
+	return audio
+
 def demodulate_nfm (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
 	sample_rate: float,
@@ -610,6 +650,8 @@ class RadioScanner:
 		self.buffer_size_seconds = self.recording_config.get('buffer_size_seconds', 30)
 		self.disk_flush_interval = self.recording_config.get('disk_flush_interval_seconds', 5)
 		self.audio_output_dir = self.recording_config.get('audio_output_dir', './audio')
+		self.fade_in_ms = self.recording_config.get('fade_in_ms', None)
+		self.fade_out_ms = self.recording_config.get('fade_out_ms', None)
 
 		# Broadcast WAV format parameters
 		self.broadcast_wav_format = self.recording_config.get('broadcast_wav_format', True)
@@ -1119,6 +1161,70 @@ class RadioScanner:
 
 		return psd_db_shifted
 
+	def _calculate_psd_segments (
+		self,
+		samples: numpy.typing.NDArray[numpy.complex64]
+	) -> list[numpy.typing.NDArray[numpy.float64]]:
+
+		"""
+		Calculate per-segment PSDs for transition localization.
+		Uses the same segment size and overlap as Welch.
+		"""
+
+		n_samples = len(samples)
+		segment_size = self.fft_size
+		hop_size = segment_size // 2
+		n_segments = (n_samples - segment_size) // hop_size + 1
+
+		if n_segments <= 0:
+			return []
+
+		segment_psd = []
+		for i in range(n_segments):
+			start = i * hop_size
+			end = start + segment_size
+			segment = samples[start:end]
+			windowed = segment * self.window
+			fft_result = numpy.fft.fft(windowed)
+			psd_db = 10 * numpy.log10(numpy.abs(fft_result) ** 2 + 1e-12)
+			segment_psd.append(numpy.fft.fftshift(psd_db))
+
+		return segment_psd
+
+	def _find_transition_index(
+		self,
+		samples: numpy.typing.NDArray[numpy.complex64],
+		channel_freq: float,
+		turning_on: bool,
+		segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None
+	) -> int:
+
+		"""
+		Find the sample index within a chunk where a channel turns ON or OFF.
+		Returns a conservative boundary based on per-segment SNR.
+		"""
+
+		if not segment_psd:
+			return 0 if turning_on else len(samples)
+
+		segment_size = self.fft_size
+		hop_size = segment_size // 2
+		threshold = self.snr_threshold_db if turning_on else self.snr_threshold_off_db
+
+		if turning_on:
+			for i, psd_db in enumerate(segment_psd):
+				snr_db = self._get_channel_power(psd_db, channel_freq) - self._estimate_noise_floor(psd_db)
+				if snr_db > threshold:
+					return min(len(samples), i * hop_size)
+			return 0
+
+		for i, psd_db in enumerate(segment_psd):
+			snr_db = self._get_channel_power(psd_db, channel_freq) - self._estimate_noise_floor(psd_db)
+			if snr_db <= threshold:
+				return min(len(samples), i * hop_size)
+
+		return len(samples)
+
 	def _get_channel_power (self, psd_db: numpy.typing.NDArray[numpy.float64], channel_freq: float) -> float:
 
 		"""
@@ -1186,7 +1292,12 @@ class RadioScanner:
 		# Use median of noise samples - robust to outliers
 		return numpy.median(noise_samples)
 
-	def _extract_channel_iq (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float) -> numpy.typing.NDArray[numpy.complex64]:
+	def _extract_channel_iq (
+		self,
+		samples: numpy.typing.NDArray[numpy.complex64],
+		channel_freq: float,
+		sample_offset: int = 0
+	) -> numpy.typing.NDArray[numpy.complex64]:
 
 		"""
 		Extract IQ samples for a specific channel by frequency shifting and filtering
@@ -1194,6 +1305,7 @@ class RadioScanner:
 		Args:
 			samples: Full bandwidth IQ samples from SDR
 			channel_freq: Center frequency of channel to extract
+			sample_offset: Offset into the chunk for phase continuity
 
 		Returns:
 			Filtered IQ samples centered at baseband for the channel
@@ -1202,7 +1314,7 @@ class RadioScanner:
 		# Frequency shift to baseband using continuous phase (prevents clicks at block boundaries)
 		freq_offset = channel_freq - self.center_freq
 		n_samples = len(samples)
-		t = (self.sample_counter + numpy.arange(n_samples)) / self.sample_rate
+		t = (self.sample_counter + sample_offset + numpy.arange(n_samples)) / self.sample_rate
 		samples_shifted = samples * numpy.exp(-2j * numpy.pi * freq_offset * t)
 
 		# Initialize filter state if needed (for continuous filtering across blocks)
@@ -1303,65 +1415,119 @@ class RadioScanner:
 		# Estimate noise floor from inter-channel gaps
 		noise_floor_db = self._estimate_noise_floor(psd_db)
 
-		# Check each channel
+		channel_metrics: dict[float, dict[str, typing.Any]] = {}
+		transitions = []
+
+		# Determine next state for each channel
 		for channel_index, channel_freq in enumerate(self.channels):
-			# Get channel power using pre-computed indices
 			channel_power_db = self._get_channel_power(psd_db, channel_freq)
-
-			# Calculate SNR
 			snr_db = channel_power_db - noise_floor_db
-
-			# Get current state
 			current_state = self.channel_states[channel_freq]
 
-			# Apply hysteresis: different thresholds for ON vs OFF
 			if current_state:
-				# Currently ON - use lower threshold to turn OFF
 				is_active = snr_db > self.snr_threshold_off_db
 			else:
-				# Currently OFF - use higher threshold to turn ON
 				is_active = snr_db > self.snr_threshold_db
 
-			# Check for state change
+			channel_metrics[channel_freq] = {
+				'index': channel_index,
+				'snr_db': snr_db,
+				'is_active': is_active,
+				'current_state': current_state
+			}
+
 			if is_active != current_state:
-				# State changed - update and notify
+				transitions.append(channel_freq)
+
+		segment_psd = None
+		if transitions and self.can_record:
+			# Only compute per-segment PSDs when transitions occur.
+			segment_psd = self._calculate_psd_segments(samples)
+
+		# Apply state changes and feed audio, trimming transition chunks if needed.
+		for channel_freq in self.channels:
+			metrics = channel_metrics[channel_freq]
+			channel_index = metrics['index']
+			snr_db = metrics['snr_db']
+			is_active = metrics['is_active']
+			current_state = metrics['current_state']
+
+			turning_on = is_active and not current_state
+			turning_off = (not is_active) and current_state
+
+			trim_start = 0
+			trim_end = len(samples)
+			sample_offset = 0
+
+			if turning_on or turning_off:
+				transition_idx = self._find_transition_index(samples, channel_freq, turning_on, segment_psd)
+				transition_idx = max(0, min(len(samples), transition_idx))
+				if turning_on:
+					trim_start = transition_idx
+					sample_offset = transition_idx
+				else:
+					trim_end = transition_idx
+
 				self.channel_states[channel_freq] = is_active
 				state_str = "ON" if is_active else "OFF"
 				channel_mhz = channel_freq / 1e6
 				logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB)")
 
-				# Handle recording state changes
-				if is_active:
+				if turning_on:
 					if self.can_record:
+						if channel_freq in self.channel_filter_zi:
+							del self.channel_filter_zi[channel_freq]
+						if channel_freq in self.channel_demod_state:
+							del self.channel_demod_state[channel_freq]
 						self._start_channel_recording(channel_freq, channel_index, loop)
-				else:
-					# Channel turned OFF - clean up all state and stop recording
-					if channel_freq in self.channel_filter_zi:
-						del self.channel_filter_zi[channel_freq]
-					if channel_freq in self.channel_demod_state:
-						del self.channel_demod_state[channel_freq]
-					if channel_freq in self.channel_recorders:
-						asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
 
-			# Feed audio samples to active recordings
-			if is_active and channel_freq in self.channel_recorders:
-				# Extract channel IQ samples
-				channel_iq = self._extract_channel_iq(samples, channel_freq)
+			# Feed audio samples to active recordings (include trimmed transition chunks).
+			if (is_active or turning_off) and channel_freq in self.channel_recorders:
+				if trim_end > trim_start:
+					channel_iq = self._extract_channel_iq(
+						samples[trim_start:trim_end],
+						channel_freq,
+						sample_offset=sample_offset
+					)
 
-				# Demodulate to audio with state preservation
-				demodulator = DEMODULATORS[self.modulation]
-				demod_state = self.channel_demod_state.get(channel_freq, None)
-				audio_samples, new_state = demodulator(
-					channel_iq,
-					self.sample_rate,
-					self.audio_sample_rate,
-					state=demod_state
-				)
-				self.channel_demod_state[channel_freq] = new_state
+					demodulator = DEMODULATORS[self.modulation]
+					demod_state = None if turning_on else self.channel_demod_state.get(channel_freq, None)
+					audio_samples, new_state = demodulator(
+						channel_iq,
+						self.sample_rate,
+						self.audio_sample_rate,
+						state=demod_state
+					)
 
-				# Append to recorder's buffer
-				recorder = self.channel_recorders[channel_freq]
-				recorder.append_audio(audio_samples)
+					if (turning_on or turning_off) and self.fade_in_ms is not None and self.fade_out_ms is not None:
+						if turning_on and self.fade_in_ms > 0:
+							audio_samples = _apply_fade(
+								audio_samples,
+								self.audio_sample_rate,
+								self.fade_in_ms,
+								0.0
+							)
+						elif turning_off and self.fade_out_ms > 0:
+							audio_samples = _apply_fade(
+								audio_samples,
+								self.audio_sample_rate,
+								0.0,
+								self.fade_out_ms
+							)
+
+					if not turning_off:
+						self.channel_demod_state[channel_freq] = new_state
+
+					recorder = self.channel_recorders[channel_freq]
+					recorder.append_audio(audio_samples)
+
+			if turning_off:
+				if channel_freq in self.channel_filter_zi:
+					del self.channel_filter_zi[channel_freq]
+				if channel_freq in self.channel_demod_state:
+					del self.channel_demod_state[channel_freq]
+				if channel_freq in self.channel_recorders:
+					asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
 
 		# Update sample counter for continuous phase tracking
 		self.sample_counter += len(samples)
