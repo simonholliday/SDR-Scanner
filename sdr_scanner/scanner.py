@@ -1,7 +1,3 @@
-"""
-Radio scanner orchestration for band scanning and channel detection
-"""
-
 import asyncio
 import logging
 import numpy
@@ -15,25 +11,19 @@ import sdr_scanner.constants
 import sdr_scanner.devices
 import sdr_scanner.dsp.demodulation
 import sdr_scanner.dsp.filters
-import sdr_scanner.recording.recorder
-
+import sdr_scanner.recording
 
 logger = logging.getLogger(__name__)
 
-
 class RadioScanner:
+
 	"""
 	Self-contained radio scanner for SDR devices
 	Scans bands asynchronously and detects active channels based on SNR
 	"""
 
-	def __init__(
-		self,
-		config_path: str = 'sdr_scanner.config.yaml',
-		band_name: str = 'pmr',
-		device_type: str = 'rtlsdr',
-		device_index: int = 0
-	) -> None:
+	def __init__ (self, config_path:str='config.yaml', band_name:str='pmr', device_type:str='rtlsdr', device_index:int=0, config:typing.Any|None=None) -> None:
+
 		"""
 		Initialize the scanner with configuration
 
@@ -43,81 +33,72 @@ class RadioScanner:
 			device_type: SDR type ('rtlsdr' or 'hackrf')
 			device_index: Device index for the selected SDR type
 		"""
-		self.config = sdr_scanner.config.load_config(config_path)
+
+		if config is None:
+			self.config = sdr_scanner.config.load_config(config_path)
+		else:
+			self.config = sdr_scanner.config.validate_config(config)
+
 		self.band_name = band_name
 		self.device_type = device_type
 		self.device_index = device_index
-		self.band_config = self.config['bands'][band_name]
-		self.scanner_config = self.config['scanner']
-		self.recording_config = self.config.get('recording', {})
+
+		if band_name not in self.config.bands:
+
+			available = ', '.join(self.config.bands.keys())
+			raise KeyError(f"Band '{band_name}' not found in configuration. Available bands: {available}")
+
+		self.band_config = self.config.bands[band_name]
+		self.scanner_config = self.config.scanner
+		self.recording_config = self.config.recording
 
 		# Extract band parameters
-		self.freq_start = self.band_config['freq_start']
-		self.freq_end = self.band_config['freq_end']
+		self.freq_start = self.band_config.freq_start
+		self.freq_end = self.band_config.freq_end
 
-		self.channel_spacing = self.band_config['channel_spacing']
+		self.channel_spacing = self.band_config.channel_spacing
 
-		self.channel_width = self.band_config.get(
-			'channel_width',
-			self.channel_spacing * sdr_scanner.constants.CHANNEL_WIDTH_FRACTION # Allow some gaps for inter-channel noise measurement.
-		)
+		self.channel_width = self.band_config.channel_width
 
-		self.sample_rate = self.band_config['sample_rate']
-		self.snr_threshold_db = self.band_config.get('snr_threshold_db', 12)
+		self.sample_rate = self.band_config.sample_rate
+		self.snr_threshold_db = self.band_config.snr_threshold_db
 		self.snr_threshold_off_db = self.snr_threshold_db - sdr_scanner.constants.HYSTERESIS_DB
 
 		# Validate SNR threshold
 		if self.snr_threshold_db <= sdr_scanner.constants.HYSTERESIS_DB:
+
 			logger.error(f"CONFIG ERROR: Band '{band_name}' has snr_threshold_db ({self.snr_threshold_db} dB) <= HYSTERESIS_DB ({sdr_scanner.constants.HYSTERESIS_DB} dB)")
 			logger.error(f"This would result in snr_threshold_off_db = {self.snr_threshold_off_db} dB")
 			logger.error(f"Channels would never turn OFF because SNR rarely drops to 0 or below")
 			logger.error(f"Please set snr_threshold_db to at least {sdr_scanner.constants.HYSTERESIS_DB + 0.1} dB")
 			raise ValueError(f"Invalid snr_threshold_db for band '{band_name}': must be > {sdr_scanner.constants.HYSTERESIS_DB} dB")
 
-		self.sdr_gain_db = self.band_config.get('sdr_gain_db', 'auto')
+		self.sdr_gain_db = self.band_config.sdr_gain_db
 
 		# Recording parameters
-		self.modulation = self.band_config.get('modulation', None)
-		self.recording_enabled = self.recording_config.get('enabled', False)
-		self.audio_sample_rate = self.recording_config.get('audio_sample_rate', 16000)
-		self.buffer_size_seconds = self.recording_config.get('buffer_size_seconds', 30)
-		self.disk_flush_interval = self.recording_config.get('disk_flush_interval_seconds', 5)
-		self.audio_output_dir = self.recording_config.get('audio_output_dir', './audio')
-		self.fade_in_ms = self.recording_config.get('fade_in_ms', None)
-		self.fade_out_ms = self.recording_config.get('fade_out_ms', None)
+		self.modulation = self.band_config.modulation
+		self.recording_enabled = self.recording_config.enabled
+		self.audio_sample_rate = self.recording_config.audio_sample_rate
+		self.buffer_size_seconds = self.recording_config.buffer_size_seconds
+		self.disk_flush_interval = self.recording_config.disk_flush_interval_seconds
+		self.audio_output_dir = self.recording_config.audio_output_dir
+		self.fade_in_ms = self.recording_config.fade_in_ms
+		self.fade_out_ms = self.recording_config.fade_out_ms
 
 		self.can_demod = self.modulation in sdr_scanner.dsp.demodulation.DEMODULATORS
 
-		audio_gate_threshold = self.band_config.get(
-			'audio_gate_rms_threshold',
-			self.scanner_config.get('audio_gate_rms_threshold', 0.0)
-		)
-
-		if audio_gate_threshold is None:
-			audio_gate_threshold = 0.0
-
-		self.audio_gate_rms_threshold = float(audio_gate_threshold)
-
-		audio_gate_hold = self.band_config.get(
-			'audio_gate_hold_slices',
-			self.scanner_config.get('audio_gate_hold_slices', 2)
-		)
-
-		self.audio_gate_hold_slices = max(1, int(audio_gate_hold))
-		self.audio_gate_enabled = self.can_demod and self.audio_gate_rms_threshold > 0.0
-
 		# Broadcast WAV format parameters
-		self.broadcast_wav_format = self.recording_config.get('broadcast_wav_format', True)
-		self.default_description = self.recording_config.get('default_description', '')
-		self.originator = self.recording_config.get('originator', 'SDR Scanner')
-		self.include_coding_history = self.recording_config.get('include_coding_history', True)
+		self.broadcast_wav_format = self.recording_config.broadcast_wav_format
+		self.default_description = self.recording_config.default_description
+		self.originator = self.recording_config.originator
+		self.include_coding_history = self.recording_config.include_coding_history
 
 		# Check if recording is possible (enabled and demodulator available)
 		self.can_record = self.recording_enabled and self.can_demod
 
 		# Scanner parameters
-		self.sdr_device_sample_size = self.scanner_config['sdr_device_sample_size']
-		self.band_time_slice_ms = self.scanner_config['band_time_slice_ms']
+		self.sdr_device_sample_size = self.scanner_config.sdr_device_sample_size
+		self.band_time_slice_ms = self.scanner_config.band_time_slice_ms
 
 		# Calculate channels in the band
 		self.channels = self._calculate_channels()
@@ -134,12 +115,7 @@ class RadioScanner:
 		self.channel_states: dict[float, bool] = {ch_freq: False for ch_freq in self.channels}
 
 		# Channel recorders: one per active channel
-		self.channel_recorders: dict[float, sdr_scanner.recording.recorder.ChannelRecorder] = {}
-
-		# Audio gate state tracking (secondary check after RF SNR)
-		self.audio_gate_state: dict[float, bool] = {ch_freq: False for ch_freq in self.channels}
-		self.audio_gate_on_counts: dict[float, int] = {ch_freq: 0 for ch_freq in self.channels}
-		self.audio_gate_off_counts: dict[float, int] = {ch_freq: 0 for ch_freq in self.channels}
+		self.channel_recorders: dict[float, sdr_scanner.recording.ChannelRecorder] = {}
 
 		# SDR device
 		self.sdr: typing.Any | None = None
@@ -157,14 +133,8 @@ class RadioScanner:
 		# Per-channel filter state for continuous processing (prevents clicks at block boundaries)
 		self.channel_filter_zi: dict[float, numpy.typing.NDArray[numpy.complex128]] = {}
 
-		# Separate filter state for audio gate demodulation (keeps recording state clean)
-		self.audio_gate_filter_zi: dict[float, numpy.typing.NDArray[numpy.complex128]] = {}
-
 		# Per-channel demodulator state (last IQ sample and de-emphasis filter state)
 		self.channel_demod_state: dict[float, dict] = {}
-
-		# Demodulator state for audio gate (separate from recording)
-		self.audio_gate_demod_state: dict[float, dict] = {}
 
 		# Cumulative sample counter for continuous phase in frequency shifting
 		self.sample_counter: int = 0
@@ -191,34 +161,33 @@ class RadioScanner:
 			status = "DISABLED"
 		logger.info(f"Recording: {status}")
 
-		if self.audio_gate_rms_threshold > 0.0 and not self.can_demod:
-			logger.warning(f"Audio gate configured but no demodulator for {self.modulation}; disabling audio gate")
-		if self.audio_gate_enabled:
-			logger.info(
-				f"Audio gate: ENABLED (RMS >= {self.audio_gate_rms_threshold:.3f}, hold {self.audio_gate_hold_slices} slices)"
-			)
-		else:
-			logger.info("Audio gate: DISABLED")
 
 	def _calculate_channels(self) -> list[float]:
+
 		"""
 		Calculate all channel frequencies in the band
 
 		Returns:
 			List of channel center frequencies in Hz
 		"""
+
 		channels = []
+
 		freq = self.freq_start
+
 		while freq <= self.freq_end:
 			channels.append(freq)
 			freq += self.channel_spacing
+
 		return channels
 
-	def _precompute_fft_params(self) -> None:
+	def _precompute_fft_params (self) -> None:
+
 		"""
 		Pre-compute FFT window, frequency bins, and channel index ranges.
 		Called once after sample size is determined.
 		"""
+
 		# Calculate samples per time slice
 		time_slice_seconds = self.band_time_slice_ms / 1000.0
 		self.samples_per_slice = int(self.sample_rate * time_slice_seconds)
@@ -293,8 +262,8 @@ class RadioScanner:
 		dc_end = min(self.fft_size, center_bin + sdr_scanner.constants.DC_SPIKE_BINS + 1)
 		self.dc_mask[dc_start:dc_end] = False
 
-		# Pre-compute channel extraction filter (for recording or audio gate)
-		if self.can_demod and (self.recording_enabled or self.audio_gate_enabled):
+		# Pre-compute channel extraction filter (for recording)
+		if self.can_demod and self.recording_enabled:
 			cutoff_freq = self.channel_width / 2
 			normalized_cutoff = cutoff_freq / (self.sample_rate / 2)
 			self.channel_filter_sos = scipy.signal.butter(5, normalized_cutoff, btype='low', output='sos')
@@ -303,14 +272,15 @@ class RadioScanner:
 		logger.info(f"Welch segments: {sdr_scanner.constants.WELCH_SEGMENTS}, samples per slice: {self.samples_per_slice}")
 		logger.info(f"DC spike exclusion: {sdr_scanner.constants.DC_SPIKE_BINS * 2 + 1} bins around center")
 
-	def _compute_noise_regions(self) -> None:
+	def _compute_noise_regions (self) -> None:
+
 		"""
 		Compute the index ranges for noise estimation.
 		Uses the gaps between channels and areas outside the channel band.
 		"""
+
 		self.noise_indices = []
 
-		# Sort channels by frequency
 		sorted_channels = sorted(self.channels)
 
 		# Calculate observable frequency range
@@ -336,8 +306,11 @@ class RadioScanner:
 			logger.debug(f"No gap before first channel (gap would be {gap_hz:.1f} kHz)")
 
 		# Gaps between channels
+
 		inter_channel_gaps = 0
+
 		for i in range(len(sorted_channels) - 1):
+
 			ch1 = sorted_channels[i]
 			ch2 = sorted_channels[i + 1]
 
@@ -345,14 +318,19 @@ class RadioScanner:
 			ch2_low = ch2 - self.channel_width / 2
 
 			# Only use gap if there's actually space between channels
-			if ch2_low > ch1_high:
-				idx_start = numpy.searchsorted(self.freqs, ch1_high)
-				idx_end = numpy.searchsorted(self.freqs, ch2_low)
-				if idx_end > idx_start:
-					gap_hz = (ch2_low - ch1_high) / 1e3
-					self.noise_indices.append((idx_start, idx_end))
-					inter_channel_gaps += 1
-					logger.debug(f"Inter-channel gap {inter_channel_gaps}: {gap_hz:.1f} kHz ({idx_end - idx_start} bins)")
+
+			if ch2_low <= ch1_high:
+				continue
+
+			idx_start = numpy.searchsorted(self.freqs, ch1_high)
+			idx_end = numpy.searchsorted(self.freqs, ch2_low)
+
+			if idx_end > idx_start:
+
+				gap_hz = (ch2_low - ch1_high) / 1e3
+				self.noise_indices.append((idx_start, idx_end))
+				inter_channel_gaps += 1
+				logger.debug(f"Inter-channel gap {inter_channel_gaps}: {gap_hz:.1f} kHz ({idx_end - idx_start} bins)")
 
 		# Region after last channel (use edge of observable range, not band definition)
 		last_channel = sorted_channels[-1]
@@ -365,16 +343,21 @@ class RadioScanner:
 		band_end_idx = numpy.searchsorted(self.freqs, noise_end_freq)
 
 		gap_hz = (noise_end_freq - last_channel_high) / 1e3
+
 		if band_end_idx > last_channel_idx:
+
 			self.noise_indices.append((last_channel_idx, band_end_idx))
 			logger.debug(f"Edge margin AFTER last channel: {gap_hz:.1f} kHz ({band_end_idx - last_channel_idx} bins)")
+
 		else:
+
 			logger.debug(f"No gap after last channel (gap would be {gap_hz:.1f} kHz)")
 
 		total_noise_bins = sum(end - start for start, end in self.noise_indices)
 		logger.info(f"Noise estimation regions: {len(self.noise_indices)} gaps, {total_noise_bins} bins total")
 
-	def _calibrate_sdr(self, known_freq: float, bandwidth: float = 300e3, iterations: int = 10) -> None:
+	def _calibrate_sdr (self, known_freq: float, bandwidth: float = 300e3, iterations: int = 10) -> None:
+
 		"""
 		Calibrate SDR frequency offset using a known strong signal
 
@@ -383,12 +366,13 @@ class RadioScanner:
 			bandwidth: Bandwidth to sample in Hz (default: 300 kHz)
 			iterations: Number of measurements to average (default: 10)
 		"""
+
 		if self.sdr is None:
 			raise RuntimeError("SDR device not initialized")
 
 		logger.info(f"Calibrating SDR using known signal at {known_freq/1e6:.3f} MHz within {bandwidth/1e3:.0f} kHz bandwidth...")
 
-		# Store current settings
+		# Store current settings for restoration after calibration
 		initial_center_freq = self.sdr.center_freq
 		initial_sample_rate = self.sdr.sample_rate
 
@@ -397,9 +381,12 @@ class RadioScanner:
 		self.sdr.sample_rate = bandwidth
 
 		# Warm-up: discard first few reads to flush stale buffer data
+
 		logger.info("Warming up SDR...")
 		sample_size = 256 * 1024
+
 		for _ in range(3):
+
 			self.sdr.read_samples(sample_size)
 			time.sleep(0.1)
 
@@ -408,6 +395,7 @@ class RadioScanner:
 		magnitude_db = None  # Will be set in loop, used for noise floor calculation
 
 		for iteration in range(iterations, 0, -1):
+
 			logger.info(f"Calibration measurement {iterations - iteration + 1}/{iterations}...")
 
 			# Read samples
@@ -513,7 +501,7 @@ class RadioScanner:
 		logger.info("SDR device configured successfully")
 
 		# Calibrate frequency offset if calibration frequency is provided
-		calibration_freq = self.scanner_config.get('calibration_frequency_hz', None)
+		calibration_freq = self.scanner_config.calibration_frequency_hz
 		if calibration_freq is not None and hasattr(self.sdr, 'read_samples') and hasattr(self.sdr, 'freq_correction'):
 			self._calibrate_sdr(calibration_freq)
 
@@ -625,33 +613,30 @@ class RadioScanner:
 
 		return psd_db_shifted
 
-	def _calculate_psd_segments(
-		self,
-		samples: numpy.typing.NDArray[numpy.complex64]
-	) -> list[numpy.typing.NDArray[numpy.float64]]:
+	def _calculate_psd_segments (self, samples:numpy.typing.NDArray[numpy.complex64]) -> list[numpy.typing.NDArray[numpy.float64]]:
+
 		"""
 		Calculate per-segment PSDs for transition localization.
 		Uses the same segment size and overlap as Welch.
 		"""
+
 		segment_psd = []
+
 		for windowed in self._iter_windowed_segments(samples):
+
 			fft_result = numpy.fft.fft(windowed)
 			psd_db = 10 * numpy.log10(numpy.abs(fft_result) ** 2 + 1e-12)
 			segment_psd.append(numpy.fft.fftshift(psd_db))
 
 		return segment_psd
 
-	def _find_transition_index(
-		self,
-		samples: numpy.typing.NDArray[numpy.complex64],
-		channel_freq: float,
-		turning_on: bool,
-		segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None
-	) -> int:
+	def _find_transition_index (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, turning_on: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None) -> int:
+
 		"""
 		Find the sample index within a chunk where a channel turns ON or OFF.
 		Returns a conservative boundary based on per-segment SNR.
 		"""
+
 		if not segment_psd:
 			return 0 if turning_on else len(samples)
 
@@ -673,17 +658,7 @@ class RadioScanner:
 
 		return len(samples)
 
-	def _prepare_channel_transition(
-		self,
-		samples: numpy.typing.NDArray[numpy.complex64],
-		channel_freq: float,
-		channel_index: int,
-		snr_db: float,
-		is_active: bool,
-		current_state: bool,
-		segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None,
-		loop: asyncio.AbstractEventLoop
-	) -> tuple[int, int, int, bool, bool]:
+	def _prepare_channel_transition (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, channel_index:int, snr_db: float, is_active:bool, current_state:bool, segment_psd:list[numpy.typing.NDArray[numpy.float64]] | None, loop:asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
 		"""
 		Compute trim boundaries and update state for a channel transition.
 		Returns trim_start, trim_end, sample_offset, turning_on, turning_off.
@@ -710,15 +685,19 @@ class RadioScanner:
 			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB)")
 
 			if turning_on and self.can_record:
+
 				if channel_freq in self.channel_filter_zi:
 					del self.channel_filter_zi[channel_freq]
+
 				if channel_freq in self.channel_demod_state:
 					del self.channel_demod_state[channel_freq]
+
 				self._start_channel_recording(channel_freq, channel_index, loop)
 
 		return trim_start, trim_end, sample_offset, turning_on, turning_off
 
-	def _get_channel_power(self, psd_db: numpy.typing.NDArray[numpy.float64], channel_freq: float) -> float:
+	def _get_channel_power (self, psd_db: numpy.typing.NDArray[numpy.float64], channel_freq: float) -> float:
+
 		"""
 		Extract power for a specific channel from PSD using pre-computed indices.
 
@@ -729,6 +708,7 @@ class RadioScanner:
 		Returns:
 			Mean power of the channel in dB
 		"""
+
 		idx_start, idx_end = self.channel_indices[channel_freq]
 
 		if idx_end <= idx_start:
@@ -781,30 +761,30 @@ class RadioScanner:
 		# Use median of noise samples - robust to outliers
 		return numpy.median(noise_samples)
 
-	def _extract_channel_iq_with_state(
-		self,
-		samples: numpy.typing.NDArray[numpy.complex64],
-		channel_freq: float,
-		state_dict: dict[float, numpy.typing.NDArray[numpy.complex128]],
-		sample_offset: int = 0
-	) -> numpy.typing.NDArray[numpy.complex64]:
+	def _extract_channel_iq_with_state (self, samples:numpy.typing.NDArray[numpy.complex64],channel_freq:float, state_dict:dict[float, numpy.typing.NDArray[numpy.complex128]], sample_offset:int=0) -> numpy.typing.NDArray[numpy.complex64]:
+
 		"""
 		Extract IQ samples for a specific channel by frequency shifting and filtering.
 		Uses the provided filter state dict to keep independent pipelines.
 		"""
+
 		# Frequency shift to baseband using continuous phase (prevents clicks at block boundaries)
+
 		freq_offset = channel_freq - self.center_freq
 		n_samples = len(samples)
 		t = (self.sample_counter + sample_offset + numpy.arange(n_samples)) / self.sample_rate
 		samples_shifted = samples * numpy.exp(-2j * numpy.pi * freq_offset * t)
 
 		# Initialize filter state if needed (for continuous filtering across blocks)
+
 		if channel_freq not in state_dict:
+
 			# Initialize to zero state to avoid transients from arbitrary first sample
 			zi = scipy.signal.sosfilt_zi(self.channel_filter_sos)
 			state_dict[channel_freq] = (zi * 0.0).astype(numpy.complex128)
 
 		# Low-pass filter with state preservation (prevents transients at block boundaries)
+
 		filtered, state_dict[channel_freq] = scipy.signal.sosfilt(
 			self.channel_filter_sos,
 			samples_shifted,
@@ -813,12 +793,8 @@ class RadioScanner:
 
 		return filtered
 
-	def _extract_channel_iq(
-		self,
-		samples: numpy.typing.NDArray[numpy.complex64],
-		channel_freq: float,
-		sample_offset: int = 0
-	) -> numpy.typing.NDArray[numpy.complex64]:
+	def _extract_channel_iq (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, sample_offset:int=0) -> numpy.typing.NDArray[numpy.complex64]:
+
 		"""
 		Extract IQ samples for a specific channel by frequency shifting and filtering
 
@@ -830,14 +806,11 @@ class RadioScanner:
 		Returns:
 			Filtered IQ samples centered at baseband for the channel
 		"""
-		return self._extract_channel_iq_with_state(
-			samples,
-			channel_freq,
-			self.channel_filter_zi,
-			sample_offset=sample_offset
-		)
 
-	def _start_channel_recording(self, channel_freq: float, channel_index: int, loop: asyncio.AbstractEventLoop) -> None:
+		return self._extract_channel_iq_with_state(samples, channel_freq, self.channel_filter_zi, sample_offset=sample_offset)
+
+	def _start_channel_recording (self, channel_freq: float, channel_index: int, loop: asyncio.AbstractEventLoop) -> None:
+
 		"""
 		Start recording a channel
 
@@ -846,8 +819,10 @@ class RadioScanner:
 			channel_index: Channel index number
 			loop: Event loop to use for creating async tasks
 		"""
+
 		# Create recorder instance
-		channel_recorder = sdr_scanner.recording.recorder.ChannelRecorder(
+
+		channel_recorder = sdr_scanner.recording.ChannelRecorder(
 			channel_freq=channel_freq,
 			channel_index=channel_index,
 			band_name=self.band_name,
@@ -871,7 +846,7 @@ class RadioScanner:
 		# Store recorder
 		self.channel_recorders[channel_freq] = channel_recorder
 
-	async def _stop_channel_recording(self, channel_freq: float) -> None:
+	async def _stop_channel_recording (self, channel_freq: float) -> None:
 		"""
 		Stop recording a channel and close the file
 
@@ -888,58 +863,6 @@ class RadioScanner:
 
 		# Remove from dictionary
 		del self.channel_recorders[channel_freq]
-
-	def _update_audio_gate(
-		self,
-		samples: numpy.typing.NDArray[numpy.complex64],
-		channel_freq: float,
-		rf_active: bool
-	) -> bool:
-		"""
-		Update audio gate state for a channel using demodulated audio RMS.
-		This is a secondary check after the RF SNR threshold.
-		"""
-		if not rf_active:
-			self.audio_gate_state[channel_freq] = False
-			self.audio_gate_on_counts[channel_freq] = 0
-			self.audio_gate_off_counts[channel_freq] = 0
-			self.audio_gate_filter_zi.pop(channel_freq, None)
-			self.audio_gate_demod_state.pop(channel_freq, None)
-			return False
-
-		channel_iq = self._extract_channel_iq_with_state(
-			samples,
-			channel_freq,
-			self.audio_gate_filter_zi
-		)
-
-		demodulator = sdr_scanner.dsp.demodulation.DEMODULATORS[self.modulation]
-		demod_state = self.audio_gate_demod_state.get(channel_freq, None)
-		audio_samples, new_state = demodulator(
-			channel_iq,
-			self.sample_rate,
-			self.audio_sample_rate,
-			state=demod_state
-		)
-		self.audio_gate_demod_state[channel_freq] = new_state
-
-		if len(audio_samples) == 0:
-			audio_rms = 0.0
-		else:
-			audio_rms = float(numpy.sqrt(numpy.mean(numpy.square(audio_samples))))
-
-		if audio_rms >= self.audio_gate_rms_threshold:
-			self.audio_gate_on_counts[channel_freq] += 1
-			self.audio_gate_off_counts[channel_freq] = 0
-			if self.audio_gate_on_counts[channel_freq] >= self.audio_gate_hold_slices:
-				self.audio_gate_state[channel_freq] = True
-		else:
-			self.audio_gate_off_counts[channel_freq] += 1
-			self.audio_gate_on_counts[channel_freq] = 0
-			if self.audio_gate_off_counts[channel_freq] >= self.audio_gate_hold_slices:
-				self.audio_gate_state[channel_freq] = False
-
-		return self.audio_gate_state[channel_freq]
 
 	def _process_samples(self, samples: numpy.typing.NDArray[numpy.complex64], loop: asyncio.AbstractEventLoop) -> None:
 		"""
@@ -980,12 +903,7 @@ class RadioScanner:
 			else:
 				rf_active = snr_db > self.snr_threshold_db
 
-			if self.audio_gate_enabled:
-				# Secondary check: require demodulated audio energy to sustain RF activity.
-				audio_gate_active = self._update_audio_gate(samples, channel_freq, rf_active)
-				is_active = rf_active and audio_gate_active
-			else:
-				is_active = rf_active
+			is_active = rf_active
 
 			channel_metrics[channel_freq] = {
 				'index': channel_index,
