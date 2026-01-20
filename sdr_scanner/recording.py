@@ -221,10 +221,8 @@ class ChannelRecorder:
 				await self._flush_buffer_to_disk()
 
 		except asyncio.CancelledError:
-
-			# Task cancelled - do final flush before exiting
-			await self._flush_buffer_to_disk()
-			raise
+			# Let close() handle final flush and file shutdown.
+			return
 
 	async def _flush_buffer_to_disk (self) -> None:
 

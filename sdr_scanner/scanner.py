@@ -912,6 +912,7 @@ class RadioScanner:
 
 		# Apply state changes and feed audio, trimming transition chunks if needed.
 		for channel_freq in self.channels:
+
 			metrics = channel_metrics[channel_freq]
 			channel_index = metrics['index']
 			snr_db = metrics['snr_db']
@@ -919,14 +920,8 @@ class RadioScanner:
 			current_state = metrics['current_state']
 
 			trim_start, trim_end, sample_offset, turning_on, turning_off = self._prepare_channel_transition(
-				samples,
-				channel_freq,
-				channel_index,
-				snr_db,
-				is_active,
-				current_state,
-				segment_psd,
-				loop
+				samples, channel_freq, channel_index, snr_db,
+				is_active, current_state, segment_psd, loop
 			)
 
 			# Feed audio samples to active recordings (include trimmed transition chunks).
@@ -940,40 +935,32 @@ class RadioScanner:
 
 					demodulator = sdr_scanner.dsp.demodulation.DEMODULATORS[self.modulation]
 					demod_state = None if turning_on else self.channel_demod_state.get(channel_freq, None)
-					audio_samples, new_state = demodulator(
-						channel_iq,
-						self.sample_rate,
-						self.audio_sample_rate,
-						state=demod_state
-					)
 
-					if (turning_on or turning_off) and self.fade_in_ms is not None and self.fade_out_ms is not None:
-						if turning_on and self.fade_in_ms > 0:
-							audio_samples = sdr_scanner.dsp.filters.apply_fade(
-								audio_samples,
-								self.audio_sample_rate,
-								self.fade_in_ms,
-								0.0
-							)
-						elif turning_off and self.fade_out_ms > 0:
-							audio_samples = sdr_scanner.dsp.filters.apply_fade(
-								audio_samples,
-								self.audio_sample_rate,
-								0.0,
-								self.fade_out_ms
-							)
+					audio_samples, new_state = demodulator(channel_iq, self.sample_rate, self.audio_sample_rate, state=demod_state)
+
+					if turning_on and self.fade_in_ms > 0:
+
+						audio_samples = sdr_scanner.dsp.filters.apply_fade(audio_samples, self.audio_sample_rate, self.fade_in_ms, 0.0)
+
+					elif turning_off and self.fade_out_ms > 0:
+
+						audio_samples = sdr_scanner.dsp.filters.apply_fade(audio_samples, self.audio_sample_rate, 0.0, self.fade_out_ms)
 
 					if not turning_off:
+
 						self.channel_demod_state[channel_freq] = new_state
 
 					channel_recorder = self.channel_recorders[channel_freq]
 					channel_recorder.append_audio(audio_samples)
 
 			if turning_off:
+
 				if channel_freq in self.channel_filter_zi:
 					del self.channel_filter_zi[channel_freq]
+
 				if channel_freq in self.channel_demod_state:
 					del self.channel_demod_state[channel_freq]
+
 				if channel_freq in self.channel_recorders:
 					asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
 
