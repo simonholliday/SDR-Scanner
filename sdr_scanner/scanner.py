@@ -145,6 +145,7 @@ class RadioScanner:
 		logger.info(f"Sample rate: {self.sample_rate/1e6:.3f} MHz")
 		logger.info(f"SNR threshold: {self.snr_threshold_db} dB ON / {self.snr_threshold_off_db} dB OFF (hysteresis)")
 		logger.info(f"SDR Gain: {self.sdr_gain_db}")
+		logger.info(f"SDR Device: {self.device_type} (index {self.device_index})")
 		logger.info(f"Modulation: {self.modulation}")
 
 		if self.can_record:
@@ -478,12 +479,16 @@ class RadioScanner:
 		else:
 			logger.info("SDR calibration complete - no correction needed")
 
-	def _setup_sdr(self) -> None:
+	def _setup_sdr (self) -> None:
+
 		"""Configure the SDR device with calculated parameters"""
+
 		logger.info("Setting up SDR device...")
+
 		self.sdr = sdr_scanner.devices.create_device(self.device_type, self.device_index)
 		self.sdr.sample_rate = self.sample_rate
 		self.sdr.center_freq = self.center_freq
+
 		if self.sdr_gain_db == 'auto' or self.sdr_gain_db is None:
 			try:
 				self.sdr.gain = 'auto'
@@ -491,10 +496,18 @@ class RadioScanner:
 				self.sdr.gain = None
 		else:
 			self.sdr.gain = self.sdr_gain_db
+
+		serial = getattr(self.sdr, 'serial', None)
+
+		if serial:
+			logger.info(f"SDR serial: {serial}")
+
 		logger.info("SDR device configured successfully")
 
 		# Calibrate frequency offset if calibration frequency is provided
+
 		calibration_freq = self.scanner_config.calibration_frequency_hz
+
 		if calibration_freq is not None and hasattr(self.sdr, 'read_samples') and hasattr(self.sdr, 'freq_correction'):
 			self._calibrate_sdr(calibration_freq)
 

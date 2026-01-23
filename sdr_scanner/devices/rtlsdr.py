@@ -23,6 +23,7 @@ class RtlSdrDevice(BaseDevice):
 		Args:
 			device_index: Index of the RTL-SDR device to use (default: 0)
 		"""
+		self._device_index = device_index
 		self._device = rtlsdr.RtlSdr(device_index)
 
 	@property
@@ -64,6 +65,26 @@ class RtlSdrDevice(BaseDevice):
 	def freq_correction(self, value: int) -> None:
 		"""Set the frequency correction in PPM"""
 		self._device.freq_correction = value
+
+	@property
+	def serial(self) -> str | None:
+		"""Get the device serial number if available."""
+		serial = None
+		try:
+			serials = rtlsdr.RtlSdr.get_device_serial_addresses()
+			if 0 <= self._device_index < len(serials):
+				serial = serials[self._device_index]
+		except Exception:
+			serial = None
+
+		if isinstance(serial, bytes):
+			serial = serial.decode('ascii', errors='replace')
+
+		if isinstance(serial, str):
+			serial = serial.strip()
+			return serial if serial else None
+
+		return None
 
 	def read_samples(self, num_samples: int) -> typing.Any:
 		"""
