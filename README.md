@@ -63,7 +63,6 @@ scanner:
 Recording
 ```
 recording:
-  enabled: true
   buffer_size_seconds: 30
   disk_flush_interval_seconds: 5
   audio_sample_rate: 16000
@@ -106,6 +105,7 @@ Per-band keys:
 - `channel_width`: optional; defaults to `channel_spacing * 0.84`.
 - `type`: used to inherit defaults from `band_defaults`.
 - `modulation`: `AM` or `NFM`.
+- `recording_enabled`: enable recording for this band. Optional, defaults to `false` (can also be set in `band_defaults`).
 - `snr_threshold_db`: detection threshold (dB above noise floor).
 - `sdr_gain_db`: numeric or `auto`.
 - `exclude_channel_indices`: 0-based indices to skip (no analysis, no recording).

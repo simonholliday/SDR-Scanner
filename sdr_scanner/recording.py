@@ -153,7 +153,7 @@ class ChannelRecorder:
 		self._write_lock = threading.Lock()
 		self._buffer_lock = threading.Lock()
 
-		logger.info(f"Started recording channel {channel_index} (f = {channel_freq/1e6:.5f} MHz) to {self.filepath}")
+		logger.debug(f"Started recording channel {channel_index} (f = {channel_freq/1e6:.5f} MHz) to {self.filepath}")
 
 	def append_audio (self, samples: numpy.typing.NDArray[numpy.float32]) -> None:
 
@@ -320,7 +320,7 @@ class ChannelRecorder:
 			self._append_bext_chunk()
 
 		duration_seconds = self.total_samples_written / self.audio_sample_rate
-		logger.info(f"Stopped recording channel {self.channel_index} (f = {self.channel_freq/1e6:.5f} MHz) - Duration: {duration_seconds:.1f}s, File: {self.filepath}")
+		logger.debug(f"Stopped recording channel {self.channel_index} (f = {self.channel_freq/1e6:.5f} MHz) - Duration: {duration_seconds:.1f}s, File: {self.filepath}")
 
 	def _append_bext_chunk (self) -> None:
 		"""

@@ -49,7 +49,6 @@ class RecordingConfig(BaseModel):
 
 	model_config = ConfigDict(extra='forbid')
 
-	enabled: bool = False
 	buffer_size_seconds: float = Field(default=30.0, ge=0.0)
 	disk_flush_interval_seconds: float = Field(default=5.0, gt=0.0)
 	audio_sample_rate: int = Field(default=16000, gt=0)
@@ -68,6 +67,7 @@ class BandTypeConfig(BaseModel):
 	sample_rate: float | None = Field(default=None, gt=0)
 	channel_width: float | None = Field(default=None, gt=0)
 	modulation: str | None = None
+	recording_enabled: bool = False
 	snr_threshold_db: float | None = Field(default=None)
 	sdr_gain_db: float | str | None = 'auto'
 
@@ -94,6 +94,7 @@ class BandConfig(BaseModel):
 	channel_width: float | None = Field(default=None, gt=0)
 	type: str | None = None
 	modulation: str | None = None
+	recording_enabled: bool = False
 	exclude_channel_indices: list[int] = Field(default_factory=list)
 	snr_threshold_db: float = Field(default=12.0)
 	sdr_gain_db: float | str | None = 'auto'

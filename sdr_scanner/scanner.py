@@ -77,7 +77,7 @@ class RadioScanner:
 
 		# Recording parameters
 		self.modulation = self.band_config.modulation
-		self.recording_enabled = self.recording_config.enabled
+		self.recording_enabled = self.band_config.recording_enabled
 		self.audio_sample_rate = self.recording_config.audio_sample_rate
 		self.buffer_size_seconds = self.recording_config.buffer_size_seconds
 		self.disk_flush_interval = self.recording_config.disk_flush_interval_seconds
@@ -703,7 +703,10 @@ class RadioScanner:
 			state_str = "ON" if is_active else "OFF"
 			channel_mhz = channel_freq / 1e6
 
-			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB)")
+			can_record_string = "YES" if self.can_record else "NO"
+
+			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB, recording: {can_record_string})")
+			print("".join("X" if self.channel_states[ch] else "-" for ch in self.channels))
 
 			if turning_on and self.can_record:
 
@@ -713,7 +716,7 @@ class RadioScanner:
 				if channel_freq in self.channel_demod_state:
 					del self.channel_demod_state[channel_freq]
 
-				self._start_channel_recording(channel_freq, channel_index, loop)
+				self._start_channel_recording(channel_freq, channel_index, snr_db, loop)
 
 		return trim_start, trim_end, sample_offset, turning_on, turning_off
 
@@ -814,7 +817,7 @@ class RadioScanner:
 
 		return filtered
 
-	def _start_channel_recording (self, channel_freq:float, channel_index:int, loop:asyncio.AbstractEventLoop) -> None:
+	def _start_channel_recording (self, channel_freq:float, channel_index:int, snr_db:float, loop:asyncio.AbstractEventLoop) -> None:
 
 		"""
 		Start recording a channel
@@ -822,12 +825,13 @@ class RadioScanner:
 		Args:
 			channel_freq: Channel center frequency in Hz
 			channel_index: Channel index number
+			snr_db: Passed for into only, may be used to generate filename_suffix
 			loop: Event loop to use for creating async tasks
 		"""
 
 		# Create recorder instance
 
-		filename_suffix = self.device_type + "_" + str(self.device_index)
+		filename_suffix = f"{snr_db:.1f}" + "dB_" + self.device_type + "_" + str(self.device_index)
 
 		channel_recorder = sdr_scanner.recording.ChannelRecorder(
 			channel_freq=channel_freq,
