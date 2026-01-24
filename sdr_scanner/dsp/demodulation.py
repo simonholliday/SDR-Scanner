@@ -95,27 +95,65 @@ def demodulate_am(
 	# AM demodulation - extract magnitude (envelope detection)
 	demod = numpy.abs(iq_samples)
 
-	# DC removal - subtract block mean
-	demod_dc_blocked = demod - numpy.mean(demod)
+	# Decimate to audio sample rate first to reduce CPU load.
+	audio, state = sdr_scanner.dsp.filters.decimate_audio(demod, sample_rate, audio_sample_rate, state)
+	if len(audio) == 0:
+		return audio.astype(numpy.float32, copy=False), state
 
-	# Smoothed AGC using leaky integrator
-	block_level = numpy.percentile(numpy.abs(demod_dc_blocked), 99)
+	# DC removal at audio rate with state to avoid boundary steps.
+	cutoff_hz = 30.0
+	if state.get('am_dc_fs') != audio_sample_rate or 'am_dc_sos' not in state:
+		state['am_dc_sos'] = scipy.signal.butter(1, cutoff_hz, btype='highpass', fs=audio_sample_rate, output='sos')
+		state['am_dc_zi'] = scipy.signal.sosfilt_zi(state['am_dc_sos']) * 0.0
+		state['am_dc_fs'] = audio_sample_rate
+	elif 'am_dc_zi' not in state:
+		state['am_dc_zi'] = scipy.signal.sosfilt_zi(state['am_dc_sos']) * 0.0
 
-	if 'agc_level' not in state:
-		state['agc_level'] = block_level if block_level > 0.01 else 1.0
+	audio, state['am_dc_zi'] = scipy.signal.sosfilt(
+		state['am_dc_sos'],
+		audio,
+		zi=state['am_dc_zi']
+	)
 
-	state['agc_level'] = sdr_scanner.constants.AM_AGC_ALPHA * block_level + (1 - sdr_scanner.constants.AM_AGC_ALPHA) * state['agc_level']
-
-	if state['agc_level'] > 0.01:
-		demod_normalized = demod_dc_blocked / state['agc_level']
+	# Continuous AGC at audio rate to avoid slice-boundary gain steps
+	env = numpy.abs(audio)
+	attack_ms = sdr_scanner.constants.AM_AGC_ATTACK_MS
+	release_ms = sdr_scanner.constants.AM_AGC_RELEASE_MS
+	if attack_ms <= 0:
+		attack_coeff = 0.0
 	else:
-		demod_normalized = demod_dc_blocked
+		attack_coeff = numpy.exp(-1.0 / (audio_sample_rate * (attack_ms / 1000.0)))
+	if release_ms <= 0:
+		release_coeff = 0.0
+	else:
+		release_coeff = numpy.exp(-1.0 / (audio_sample_rate * (release_ms / 1000.0)))
+
+	level = state.get('am_agc_level')
+	if level is None:
+		level = max(float(numpy.mean(env)), sdr_scanner.constants.AM_AGC_FLOOR)
+
+	output = numpy.empty_like(audio, dtype=numpy.float32)
+	min_update = sdr_scanner.constants.AM_AGC_MIN_UPDATE_LEVEL
+	floor = sdr_scanner.constants.AM_AGC_FLOOR
+
+	for i in range(env.size):
+		sample_env = float(env[i])
+		if sample_env >= min_update:
+			if sample_env > level:
+				level = attack_coeff * level + (1.0 - attack_coeff) * sample_env
+			else:
+				level = release_coeff * level + (1.0 - release_coeff) * sample_env
+			if level < floor:
+				level = floor
+		output[i] = audio[i] / level if level > 0.0 else audio[i]
+
+	state['am_agc_level'] = level
+
+	output *= sdr_scanner.constants.AM_OUTPUT_GAIN
 
 	# Clip to [-1.0, 1.0] range
-	demod_normalized = numpy.clip(demod_normalized, -1.0, 1.0)
-
-	# Decimate to audio sample rate
-	return sdr_scanner.dsp.filters.decimate_audio(demod_normalized, sample_rate, audio_sample_rate, state)
+	output = numpy.clip(output, -1.0, 1.0)
+	return output.astype(numpy.float32, copy=False), state
 
 
 # Dictionary of available demodulators

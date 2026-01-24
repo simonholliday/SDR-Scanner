@@ -2,10 +2,13 @@
 Audio processing and filtering functions
 """
 
+import logging
 import math
 import numpy
 import numpy.typing
 import scipy.signal
+
+logger = logging.getLogger(__name__)
 
 
 def decimate_audio(
@@ -38,21 +41,40 @@ def decimate_audio(
 	decimation_factor = sr // ar
 
 	if sr % ar != 0:
+		if not state.get('resample_warned'):
+			logger.warning(
+				f"Non-integer resample ratio: {sr} -> {ar} Hz. "
+				"Prefer a sample_rate that is an integer multiple of audio_sample_rate for lower CPU."
+			)
+			state['resample_warned'] = True
+
 		# Use rational resampling when rates are not integer-divisible.
-		# We keep a small overlap from the previous block to reduce boundary clicks.
+		# Keep enough overlap from the previous block to cover the FIR length.
 		g = math.gcd(sr, ar)
 		up = ar // g
 		down = sr // g
 		prev = state.get('resample_prev', numpy.array([], dtype=signal.dtype))
+		last_ratio = state.get('resample_ratio')
+		if last_ratio != (up, down):
+			prev = numpy.array([], dtype=signal.dtype)
+			state['resample_ratio'] = (up, down)
+
+		current = signal
 		if prev.size > 0:
-			signal = numpy.concatenate([prev, signal])
+			signal = numpy.concatenate([prev, current])
 		resampled = scipy.signal.resample_poly(signal, up, down).astype(numpy.float32)
 		if prev.size > 0:
 			# Drop samples corresponding to the prepended overlap.
 			out_prev = int(numpy.ceil(prev.size * up / down))
 			resampled = resampled[out_prev:]
-		# Store tail for the next block.
-		state['resample_prev'] = signal[-64:].copy()
+
+		# Store tail for the next block. Use FIR length to avoid boundary clicks.
+		taps_len = state.get('resample_taps_len')
+		if taps_len is None:
+			taps_len = 10 * max(up, down) + 1
+			state['resample_taps_len'] = taps_len
+		overlap_len = min(current.size, int(taps_len))
+		state['resample_prev'] = current[-overlap_len:].copy()
 		return resampled, state
 
 	if decimation_factor <= 1:

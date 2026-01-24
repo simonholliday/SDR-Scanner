@@ -10,6 +10,7 @@ import logging
 import numpy
 import numpy.typing
 import os
+import sdr_scanner.dsp.noise_reduction
 import soundfile
 import struct
 import threading
@@ -35,7 +36,8 @@ class ChannelRecorder:
 		disk_flush_interval_seconds: float,
 		audio_output_dir: str,
 		modulation: str = "Unknown",
-		filename_suffix: str = None
+		filename_suffix: str = None,
+		soft_limit_drive: float = 2.0
 	) -> None:
 		"""
 		Initialize a channel recorder
@@ -50,6 +52,7 @@ class ChannelRecorder:
 			audio_output_dir: Output directory path
 			modulation: Modulation type (e.g., 'NFM', 'AM')
 			filename_suffix: An optional string to be added to the auto-generated filename
+			soft_limit_drive: Soft limiter drive amount (higher = stronger limiting)
 		"""
 		self.channel_freq = channel_freq
 		self.channel_index = channel_index
@@ -57,6 +60,7 @@ class ChannelRecorder:
 		self.audio_sample_rate = audio_sample_rate
 		self.disk_flush_interval = disk_flush_interval_seconds
 		self.modulation = modulation
+		self.soft_limit_drive = float(soft_limit_drive)
 
 		# Calculate maximum buffer size in samples
 		max_buffer_samples = int(buffer_size_seconds * audio_sample_rate)
@@ -264,6 +268,16 @@ class ChannelRecorder:
 		"""
 
 		# soundfile expects float32 samples in range [-1.0, 1.0] for PCM_16 output
+		try:
+			samples = sdr_scanner.dsp.noise_reduction.apply_noisereduce(samples, self.audio_sample_rate)
+		except Exception as exc:
+			logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")
+
+		if samples.size > 0:
+			drive = max(0.1, self.soft_limit_drive)
+			den = numpy.tanh(drive)
+			if den != 0.0:
+				samples = numpy.tanh(samples * drive) / den
 
 		# It will automatically convert to int16 internally
 		with self._write_lock:

@@ -40,6 +40,7 @@ class ScannerConfig(BaseModel):
 
 	sdr_device_sample_size: int = Field(gt=0)
 	band_time_slice_ms: int = Field(gt=0)
+	sample_queue_maxsize: int = Field(default=30, gt=0)
 	calibration_frequency_hz: float | None = Field(default=None, gt=0)
 
 
@@ -55,6 +56,7 @@ class RecordingConfig(BaseModel):
 	audio_output_dir: str = './audio'
 	fade_in_ms: float | None = Field(default=None, ge=0.0)
 	fade_out_ms: float | None = Field(default=None, ge=0.0)
+	soft_limit_drive: float = Field(default=2.0, gt=0.0)
 
 
 class BandTypeConfig(BaseModel):
@@ -92,6 +94,7 @@ class BandConfig(BaseModel):
 	channel_width: float | None = Field(default=None, gt=0)
 	type: str | None = None
 	modulation: str | None = None
+	exclude_channel_indices: list[int] = Field(default_factory=list)
 	snr_threshold_db: float = Field(default=12.0)
 	sdr_gain_db: float | str | None = 'auto'
 
@@ -99,6 +102,21 @@ class BandConfig(BaseModel):
 	@classmethod
 	def _validate_label(cls, value: typing.Any) -> typing.Any:
 		return _normalize_label(value)
+
+	@field_validator('exclude_channel_indices', mode='before')
+	@classmethod
+	def _validate_exclusions(cls, value: typing.Any) -> list[int]:
+		if value is None:
+			return []
+		if not isinstance(value, list):
+			raise ValueError("exclude_channel_indices must be a list of integers")
+		indices: list[int] = []
+		for item in value:
+			idx = int(item)
+			if idx < 0:
+				raise ValueError("exclude_channel_indices must be >= 0")
+			indices.append(idx)
+		return indices
 
 	@field_validator('sdr_gain_db', mode='before')
 	@classmethod

@@ -11,7 +11,6 @@ import sdr_scanner.constants
 import sdr_scanner.devices
 import sdr_scanner.dsp.demodulation
 import sdr_scanner.dsp.filters
-import sdr_scanner.dsp.noise_reduction
 import sdr_scanner.recording
 
 logger = logging.getLogger(__name__)
@@ -85,6 +84,7 @@ class RadioScanner:
 		self.audio_output_dir = self.recording_config.audio_output_dir
 		self.fade_in_ms = self.recording_config.fade_in_ms
 		self.fade_out_ms = self.recording_config.fade_out_ms
+		self.soft_limit_drive = self.recording_config.soft_limit_drive
 
 		self.can_demod = self.modulation in sdr_scanner.dsp.demodulation.DEMODULATORS
 
@@ -94,9 +94,27 @@ class RadioScanner:
 		# Scanner parameters
 		self.sdr_device_sample_size = self.scanner_config.sdr_device_sample_size
 		self.band_time_slice_ms = self.scanner_config.band_time_slice_ms
+		self.sample_queue_maxsize = self.scanner_config.sample_queue_maxsize
 
 		# Calculate channels in the band
-		self.channels = self._calculate_channels()
+		self.all_channels = self._calculate_channels()
+		excluded_indices = set(self.band_config.exclude_channel_indices or [])
+		out_of_range = sorted(idx for idx in excluded_indices if idx >= len(self.all_channels))
+		if out_of_range:
+			logger.warning(
+				f"Ignoring out-of-range excluded channel indices for band '{band_name}': "
+				f"{', '.join(str(idx) for idx in out_of_range)}"
+			)
+			excluded_indices -= set(out_of_range)
+
+		self.channels = [
+			freq for idx, freq in enumerate(self.all_channels)
+			if idx not in excluded_indices
+		]
+		self.channel_original_indices = {
+			freq: idx for idx, freq in enumerate(self.all_channels)
+			if idx not in excluded_indices
+		}
 		self.num_channels = len(self.channels)
 
 		# Calculate edge margin - half channel spacing on each side to avoid filter rolloff
@@ -141,6 +159,9 @@ class RadioScanner:
 		logger.info(f"Initialized scanner for band '{band_name}'")
 		logger.info(f"Frequency range: {self.freq_start/1e6:.5f} - {self.freq_end/1e6:.5f} MHz")
 		logger.info(f"Number of channels: {self.num_channels}")
+		if excluded_indices:
+			excluded_list = ", ".join(str(idx) for idx in sorted(excluded_indices))
+			logger.info(f"Excluded channels: {excluded_list}")
 		logger.info(f"Center frequency: {self.center_freq/1e6:.5f} MHz")
 		logger.info(f"Required bandwidth: {self.required_bandwidth/1e6:.5f} MHz (inc. {self.band_edge_margin_hz/1e3:.1f}kHz edge margin)")
 		logger.info(f"Sample rate: {self.sample_rate/1e6:.3f} MHz")
@@ -277,7 +298,7 @@ class RadioScanner:
 
 		self.noise_indices = []
 
-		sorted_channels = sorted(self.channels)
+		sorted_channels = sorted(self.all_channels)
 
 		# Calculate observable frequency range
 		observable_span = self.sample_rate
@@ -366,8 +387,6 @@ class RadioScanner:
 		if self.sdr is None:
 			raise RuntimeError("SDR device not initialized")
 
-		logger.info(f"Calibrating SDR using known signal at {known_freq/1e6:.3f} MHz within {bandwidth/1e3:.0f} kHz bandwidth...")
-
 		# Store current settings for restoration after calibration
 		initial_center_freq = self.sdr.center_freq
 		initial_sample_rate = self.sdr.sample_rate
@@ -390,9 +409,11 @@ class RadioScanner:
 		peak_magnitudes = []
 		magnitude_db = None  # Will be set in loop, used for noise floor calculation
 
+		logger.info(f"Calibrating SDR using known signal at {known_freq/1e6:.3f} MHz within {bandwidth/1e3:.0f} kHz bandwidth. This will take a few seconds...")
+
 		for iteration in range(iterations, 0, -1):
 
-			logger.info(f"Calibration measurement {iterations - iteration + 1}/{iterations}...")
+			logger.debug(f"Calibration measurement {iterations - iteration + 1}/{iterations}...")
 
 			# Read samples
 			samples = self.sdr.read_samples(sample_size)
@@ -538,7 +559,7 @@ class RadioScanner:
 			self.sample_queue.put_nowait(samples)
 		except asyncio.QueueFull:
 			# Drop samples if consumer is behind
-			logger.debug("Sample queue full; dropping samples")
+			logger.warning("Sample queue full; dropping samples")
 
 	def _sdr_callback(self, samples: numpy.typing.NDArray[numpy.complex64], _context: typing.Any) -> None:
 		"""
@@ -650,10 +671,12 @@ class RadioScanner:
 		return len(samples)
 
 	def _prepare_channel_transition (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, channel_index:int, snr_db: float, is_active:bool, current_state:bool, segment_psd:list[numpy.typing.NDArray[numpy.float64]] | None, loop:asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
+
 		"""
 		Compute trim boundaries and update state for a channel transition.
 		Returns trim_start, trim_end, sample_offset, turning_on, turning_off.
 		"""
+
 		turning_on = is_active and not current_state
 		turning_off = (not is_active) and current_state
 
@@ -662,17 +685,24 @@ class RadioScanner:
 		sample_offset = 0
 
 		if turning_on or turning_off:
+
 			transition_idx = self._find_transition_index(samples, channel_freq, turning_on, segment_psd)
 			transition_idx = max(0, min(len(samples), transition_idx))
+
 			if turning_on:
+
 				trim_start = transition_idx
 				sample_offset = transition_idx
+
 			else:
+
 				trim_end = transition_idx
 
 			self.channel_states[channel_freq] = is_active
+
 			state_str = "ON" if is_active else "OFF"
 			channel_mhz = channel_freq / 1e6
+
 			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB)")
 
 			if turning_on and self.can_record:
@@ -709,8 +739,11 @@ class RadioScanner:
 		channel_bins = psd_db[idx_start:idx_end]
 
 		# Check if this channel overlaps with DC spike
+
 		center_bin = self.fft_size // 2
+
 		if idx_start <= center_bin < idx_end:
+
 			# This channel contains the DC spike - mask it out
 			local_dc_start = max(0, center_bin - sdr_scanner.constants.DC_SPIKE_BINS - idx_start)
 			local_dc_end = min(idx_end - idx_start, center_bin + sdr_scanner.constants.DC_SPIKE_BINS + 1 - idx_start)
@@ -724,6 +757,7 @@ class RadioScanner:
 		return numpy.mean(channel_bins)
 
 	def _estimate_noise_floor(self, psd_db: numpy.typing.NDArray[numpy.float64]) -> float:
+
 		"""
 		Estimate noise floor from inter-channel gaps.
 		More accurate than percentile of entire spectrum.
@@ -734,6 +768,7 @@ class RadioScanner:
 		Returns:
 			Estimated noise floor in dB
 		"""
+
 		if not self.noise_indices:
 			# Fallback to percentile method if no gaps defined
 			return numpy.percentile(psd_db, 25)
@@ -753,10 +788,12 @@ class RadioScanner:
 		return numpy.median(noise_samples)
 
 	def _extract_channel_iq(self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, sample_offset: int = 0) -> numpy.typing.NDArray[numpy.complex64]:
+
 		"""
 		Extract IQ samples for a specific channel by frequency shifting and filtering.
 		Uses internal filter state to maintain continuity across blocks.
 		"""
+
 		# Frequency shift to baseband using continuous phase
 		freq_offset = channel_freq - self.center_freq
 		n_samples = len(samples)
@@ -801,7 +838,8 @@ class RadioScanner:
 			disk_flush_interval_seconds=self.disk_flush_interval,
 			audio_output_dir=self.audio_output_dir,
 			modulation=self.modulation,
-			filename_suffix=filename_suffix
+			filename_suffix=filename_suffix,
+			soft_limit_drive=self.soft_limit_drive
 		)
 
 		# Start the async flush task using the provided event loop
@@ -835,93 +873,99 @@ class RadioScanner:
 		"""
 		Process samples to detect active channels
 		"""
-		clipping_threshold = 0.95
-		sample_magnitude = numpy.abs(samples)
-		clipping_percentage = numpy.sum(sample_magnitude > clipping_threshold) / len(samples) * 100
+		start_time = time.perf_counter()
+		try:
+			clipping_threshold = 0.95
+			sample_magnitude = numpy.abs(samples)
+			clipping_percentage = numpy.sum(sample_magnitude > clipping_threshold) / len(samples) * 100
 
-		if clipping_percentage > 0.1:
-			logger.warning(f"ADC SATURATION: {clipping_percentage:.1f}% samples clipping. Reduce gain.")
+			if clipping_percentage > 0.1:
+				logger.warning(f"ADC SATURATION: {clipping_percentage:.1f}% samples clipping. Reduce gain.")
 
-		# Compute all PSD data once (Welch and segments)
-		psd_db, segment_psds = self._calculate_psd_data(samples)
+			# Compute all PSD data once (Welch and segments)
+			psd_db, segment_psds = self._calculate_psd_data(samples)
 
-		# Estimate noise floor
-		noise_floor_db = self._estimate_noise_floor(psd_db)
+			# Estimate noise floor
+			noise_floor_db = self._estimate_noise_floor(psd_db)
 
-		# Bulk energy check: skip per-channel analysis if the entire spectrum is quiet.
-		# We use a threshold that's strictly lower than the lowest possible detection threshold.
-		bulk_threshold_db = max(2.0, self.snr_threshold_off_db - 2.0)
-		
-		if self.dc_mask is not None:
-			max_power = numpy.max(psd_db[self.dc_mask])
-		else:
-			max_power = numpy.max(psd_db)
+			# Bulk energy check: skip per-channel analysis if the entire spectrum is quiet.
+			# We use a threshold that's strictly lower than the lowest possible detection threshold.
+			bulk_threshold_db = max(2.0, self.snr_threshold_off_db - 2.0)
 			
-		if max_power < noise_floor_db + bulk_threshold_db and not any(self.channel_states.values()):
-			# Fast path: spectrum is quiet and no channels are currently active
+			if self.dc_mask is not None:
+				max_power = numpy.max(psd_db[self.dc_mask])
+			else:
+				max_power = numpy.max(psd_db)
+				
+			if max_power < noise_floor_db + bulk_threshold_db and not any(self.channel_states.values()):
+				# Fast path: spectrum is quiet and no channels are currently active
+				self.sample_counter += len(samples)
+				return
+
+			channel_metrics: dict[float, dict[str, typing.Any]] = {}
+
+			# Determine state for each channel
+			for channel_freq in self.channels:
+				idx = self.channel_original_indices.get(channel_freq, -1)
+				snr_db = self._get_channel_power(psd_db, channel_freq) - noise_floor_db
+				current_state = self.channel_states[channel_freq]
+				
+				threshold = self.snr_threshold_off_db if current_state else self.snr_threshold_db
+				is_active = snr_db > threshold
+
+				channel_metrics[channel_freq] = {
+					'index': idx,
+					'snr_db': snr_db,
+					'is_active': is_active,
+					'current_state': current_state
+				}
+				
+			# Process each channel (state changes and recording)
+			for channel_freq in self.channels:
+				m = channel_metrics[channel_freq]
+				is_active = m['is_active']
+				current_state = m['current_state']
+				
+				trim_start, trim_end, offset, turning_on, turning_off = self._prepare_channel_transition(
+					samples, channel_freq, m['index'], m['snr_db'],
+					is_active, current_state, segment_psds, loop
+				)
+
+				if (is_active or turning_off) and channel_freq in self.channel_recorders:
+					if trim_end > trim_start:
+						channel_iq = self._extract_channel_iq(samples[trim_start:trim_end], channel_freq, sample_offset=offset)
+						demod_func = sdr_scanner.dsp.demodulation.DEMODULATORS[self.modulation]
+						demod_state = None if turning_on else self.channel_demod_state.get(channel_freq)
+
+						audio, new_state = demod_func(channel_iq, self.sample_rate, self.audio_sample_rate, state=demod_state)
+
+						if turning_on and self.fade_in_ms:
+							audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, self.fade_in_ms, 0.0)
+						elif turning_off and self.fade_out_ms:
+							audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, 0.0, self.fade_out_ms)
+
+						if not turning_off:
+							self.channel_demod_state[channel_freq] = new_state
+
+						self.channel_recorders[channel_freq].append_audio(audio)
+
+				if turning_off:
+					self.channel_filter_zi.pop(channel_freq, None)
+					self.channel_demod_state.pop(channel_freq, None)
+					if channel_freq in self.channel_recorders:
+						asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
+
+			# Update sample counter for continuous phase tracking
 			self.sample_counter += len(samples)
-			return
-
-		channel_metrics: dict[float, dict[str, typing.Any]] = {}
-		any_transitions = False
-
-		# Determine state for each channel
-		for idx, channel_freq in enumerate(self.channels):
-			snr_db = self._get_channel_power(psd_db, channel_freq) - noise_floor_db
-			current_state = self.channel_states[channel_freq]
-			
-			threshold = self.snr_threshold_off_db if current_state else self.snr_threshold_db
-			is_active = snr_db > threshold
-
-			channel_metrics[channel_freq] = {
-				'index': idx,
-				'snr_db': snr_db,
-				'is_active': is_active,
-				'current_state': current_state
-			}
-			
-			if is_active != current_state:
-				any_transitions = True
-
-		# Process each channel (state changes and recording)
-		for channel_freq in self.channels:
-			m = channel_metrics[channel_freq]
-			is_active = m['is_active']
-			current_state = m['current_state']
-			
-			trim_start, trim_end, offset, turning_on, turning_off = self._prepare_channel_transition(
-				samples, channel_freq, m['index'], m['snr_db'],
-				is_active, current_state, segment_psds, loop
-			)
-
-			if (is_active or turning_off) and channel_freq in self.channel_recorders:
-				if trim_end > trim_start:
-					channel_iq = self._extract_channel_iq(samples[trim_start:trim_end], channel_freq, sample_offset=offset)
-					demod_func = sdr_scanner.dsp.demodulation.DEMODULATORS[self.modulation]
-					demod_state = None if turning_on else self.channel_demod_state.get(channel_freq)
-
-					audio, new_state = demod_func(channel_iq, self.sample_rate, self.audio_sample_rate, state=demod_state)
-
-					audio = sdr_scanner.dsp.noise_reduction.apply_noisereduce(audio, self.audio_sample_rate)
-
-					if turning_on and self.fade_in_ms:
-						audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, self.fade_in_ms, 0.0)
-					elif turning_off and self.fade_out_ms:
-						audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, 0.0, self.fade_out_ms)
-
-					if not turning_off:
-						self.channel_demod_state[channel_freq] = new_state
-
-					self.channel_recorders[channel_freq].append_audio(audio)
-
-			if turning_off:
-				self.channel_filter_zi.pop(channel_freq, None)
-				self.channel_demod_state.pop(channel_freq, None)
-				if channel_freq in self.channel_recorders:
-					asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
-
-		# Update sample counter for continuous phase tracking
-		self.sample_counter += len(samples)
+		finally:
+			elapsed = time.perf_counter() - start_time
+			expected = len(samples) / self.sample_rate if self.sample_rate else 0.0
+			if expected > 0.0 and elapsed > expected * 1.05:
+				ratio = elapsed / expected
+				logger.warning(
+					f"Processing overrun: {elapsed:.3f}s for {expected:.3f}s slice "
+					f"({ratio:.2f}x)"
+				)
 
 	async def scan(self) -> None:
 		"""
@@ -935,7 +979,7 @@ class RadioScanner:
 
 			# Initialize async components
 			self.loop = asyncio.get_running_loop()
-			self.sample_queue = asyncio.Queue(maxsize=10)
+			self.sample_queue = asyncio.Queue(maxsize=self.sample_queue_maxsize)
 
 			# Start async SDR streaming in background thread (non-blocking)
 			# This must run in an executor because read_samples_async blocks

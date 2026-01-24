@@ -47,7 +47,7 @@ def apply_noisereduce(
 	sample_rate: int,
 	frame_ms: float = 20.0,
 	percentile: float = 20.0,
-	prop_decrease: float = 0.75,
+	prop_decrease: float = 0.8,
 	freq_mask_smooth_hz: float = 300.0,
 	time_mask_smooth_ms: float = 100.0,
 	n_fft: int = 1024

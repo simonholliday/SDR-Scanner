@@ -7,7 +7,11 @@ NFM_DEEMPHASIS_TAU = 300e-6  # 300µs time constant (standard for NFM)
 NFM_DEVIATION_HZ = 5000      # Max frequency deviation for normalization
 
 # AM AGC constants
-AM_AGC_ALPHA = 0.05          # AGC smoothing factor (lower = slower response)
+AM_AGC_MIN_UPDATE_LEVEL = 0.005  # Minimum level required to update AGC (prevents noise ramp)
+AM_AGC_FLOOR = 0.02          # Lower bound for AGC level to avoid boosting noise
+AM_AGC_ATTACK_MS = 10.0      # AGC attack time constant in ms
+AM_AGC_RELEASE_MS = 200.0    # AGC release time constant in ms
+AM_OUTPUT_GAIN = 0.5         # Post-AGC gain for AM audio to reduce clipping
 
 # RadioScanner class constants
 # Hysteresis margin in dB - channel turns ON at threshold, OFF at threshold minus HYSTERESIS_DB
