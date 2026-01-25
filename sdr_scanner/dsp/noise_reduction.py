@@ -9,15 +9,20 @@ import scipy.signal
 
 
 def _frame_rms(audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray:
+	"""Compute RMS values for overlapping frames using vectorized operations."""
 	if audio.size < frame_len:
 		return numpy.array([numpy.sqrt(numpy.mean(audio * audio))], dtype=numpy.float32)
+
 	n_frames = 1 + (audio.size - frame_len) // hop
-	rms = numpy.empty(n_frames, dtype=numpy.float32)
-	for i in range(n_frames):
-		start = i * hop
-		frame = audio[start:start + frame_len]
-		rms[i] = numpy.sqrt(numpy.mean(frame * frame))
-	return rms
+
+	# Use numpy stride_tricks for efficient sliding window - no Python loops
+	from numpy.lib.stride_tricks import as_strided
+	shape = (n_frames, frame_len)
+	strides = (audio.strides[0] * hop, audio.strides[0])
+	frames = as_strided(audio, shape=shape, strides=strides, writeable=False)
+
+	# Vectorized RMS computation across all frames at once
+	return numpy.sqrt(numpy.mean(frames * frames, axis=1)).astype(numpy.float32)
 
 
 def _noise_clip_from_percentile(

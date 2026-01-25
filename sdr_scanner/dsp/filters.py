@@ -113,7 +113,7 @@ def apply_fade(
 ) -> numpy.typing.NDArray[numpy.float32]:
 	"""
 	Apply linear fade-in/out to a 1-D audio array.
-	If either duration is None, fading is disabled.
+	Fades are applied independently - if one is None, only the other is applied.
 
 	Args:
 		audio: Input audio signal
@@ -124,15 +124,17 @@ def apply_fade(
 	Returns:
 		Audio signal with fades applied
 	"""
-	if fade_in_ms is None or fade_out_ms is None:
+	# Early exit only if both fades are disabled
+	if fade_in_ms is None and fade_out_ms is None:
 		return audio
 
 	n_samples = len(audio)
 	if n_samples == 0:
 		return audio
 
-	fade_in_len = int(sample_rate * (fade_in_ms / 1000.0))
-	fade_out_len = int(sample_rate * (fade_out_ms / 1000.0))
+	# Handle each fade independently
+	fade_in_len = int(sample_rate * (fade_in_ms / 1000.0)) if fade_in_ms is not None else 0
+	fade_out_len = int(sample_rate * (fade_out_ms / 1000.0)) if fade_out_ms is not None else 0
 
 	fade_in_len = min(fade_in_len, n_samples)
 	fade_out_len = min(fade_out_len, n_samples - fade_in_len)

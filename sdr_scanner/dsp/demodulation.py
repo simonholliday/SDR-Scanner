@@ -55,8 +55,14 @@ def demodulate_nfm(
 		[alpha], [1, alpha - 1], demod, zi=state['deemph_zi']
 	)
 
-	# DC removal - subtract block mean
-	demod_dc_blocked = demod_deemph - numpy.mean(demod_deemph)
+	# DC removal using stateful highpass filter (prevents boundary artifacts)
+	if 'nfm_dc_sos' not in state:
+		state['nfm_dc_sos'] = scipy.signal.butter(1, 30.0, btype='highpass', fs=sample_rate, output='sos')
+		state['nfm_dc_zi'] = scipy.signal.sosfilt_zi(state['nfm_dc_sos']) * 0.0
+
+	demod_dc_blocked, state['nfm_dc_zi'] = scipy.signal.sosfilt(
+		state['nfm_dc_sos'], demod_deemph, zi=state['nfm_dc_zi']
+	)
 
 	# Normalize to approximate [-1, 1] range
 	demod_normalized = demod_dc_blocked / (2 * numpy.pi * sdr_scanner.constants.NFM_DEVIATION_HZ / sample_rate)
@@ -102,10 +108,12 @@ def demodulate_am(
 
 	# DC removal at audio rate with state to avoid boundary steps.
 	cutoff_hz = 30.0
-	if state.get('am_dc_fs') != audio_sample_rate or 'am_dc_sos' not in state:
+	# Reinitialize filter if sample rate changed
+	if state.get('am_dc_fs') != audio_sample_rate:
 		state['am_dc_sos'] = scipy.signal.butter(1, cutoff_hz, btype='highpass', fs=audio_sample_rate, output='sos')
 		state['am_dc_zi'] = scipy.signal.sosfilt_zi(state['am_dc_sos']) * 0.0
 		state['am_dc_fs'] = audio_sample_rate
+	# Initialize filter state if missing
 	elif 'am_dc_zi' not in state:
 		state['am_dc_zi'] = scipy.signal.sosfilt_zi(state['am_dc_sos']) * 0.0
 
@@ -115,7 +123,7 @@ def demodulate_am(
 		zi=state['am_dc_zi']
 	)
 
-	# Continuous AGC at audio rate to avoid slice-boundary gain steps
+	# Continuous AGC at audio rate using vectorized operations
 	env = numpy.abs(audio)
 	attack_ms = sdr_scanner.constants.AM_AGC_ATTACK_MS
 	release_ms = sdr_scanner.constants.AM_AGC_RELEASE_MS
@@ -130,24 +138,45 @@ def demodulate_am(
 
 	level = state.get('am_agc_level')
 	if level is None:
-		level = max(float(numpy.mean(env)), sdr_scanner.constants.AM_AGC_FLOOR)
+		level = max(numpy.mean(env), sdr_scanner.constants.AM_AGC_FLOOR)
 
-	output = numpy.empty_like(audio, dtype=numpy.float32)
 	min_update = sdr_scanner.constants.AM_AGC_MIN_UPDATE_LEVEL
 	floor = sdr_scanner.constants.AM_AGC_FLOOR
 
-	for i in range(env.size):
-		sample_env = float(env[i])
-		if sample_env >= min_update:
-			if sample_env > level:
-				level = attack_coeff * level + (1.0 - attack_coeff) * sample_env
-			else:
-				level = release_coeff * level + (1.0 - release_coeff) * sample_env
-			if level < floor:
-				level = floor
-		output[i] = audio[i] / level if level > 0.0 else audio[i]
+	# Vectorized AGC using dual-filter approach
+	# This replaces the sample-by-sample Python loop with fast numpy operations
+	if 'am_agc_zi_attack' not in state:
+		state['am_agc_zi_attack'] = scipy.signal.lfilter_zi([1 - attack_coeff], [1, -attack_coeff]) * level
+	if 'am_agc_zi_release' not in state:
+		state['am_agc_zi_release'] = scipy.signal.lfilter_zi([1 - release_coeff], [1, -release_coeff]) * level
 
-	state['am_agc_level'] = level
+	# Apply exponential smoothing filters
+	attack_track, state['am_agc_zi_attack'] = scipy.signal.lfilter(
+		[1 - attack_coeff], [1, -attack_coeff], env, zi=state['am_agc_zi_attack']
+	)
+	release_track, state['am_agc_zi_release'] = scipy.signal.lfilter(
+		[1 - release_coeff], [1, -release_coeff], env, zi=state['am_agc_zi_release']
+	)
+
+	# Take minimum of attack and release tracks for proper AGC behavior
+	level_track = numpy.minimum(attack_track, release_track)
+
+	# Apply floor and min_update threshold
+	level_track = numpy.maximum(level_track, floor)
+	mask = env >= min_update
+	if not numpy.all(mask):
+		# Propagate last valid level where envelope is too low
+		last_valid = level
+		for i in range(len(level_track)):
+			if mask[i]:
+				last_valid = level_track[i]
+			else:
+				level_track[i] = last_valid
+
+	# Apply gain reduction with safety against division by zero
+	output = numpy.where(level_track > 1e-10, audio / level_track, audio)
+
+	state['am_agc_level'] = level_track[-1]
 
 	output *= sdr_scanner.constants.AM_OUTPUT_GAIN
 
@@ -163,23 +192,3 @@ DEMODULATORS: dict[str, typing.Callable] = {
 	# Future demodulators can be added here:
 	# 'WFM': demodulate_wfm,
 }
-
-
-def get_demodulator(modulation: str) -> typing.Callable:
-	"""
-	Get demodulator function for a specific modulation type
-
-	Args:
-		modulation: Modulation type (e.g., 'NFM', 'AM')
-
-	Returns:
-		Demodulator function
-
-	Raises:
-		KeyError: If modulation type is not supported
-	"""
-	if modulation not in DEMODULATORS:
-		available = ', '.join(DEMODULATORS.keys())
-		raise KeyError(f"Unsupported modulation '{modulation}'. Available: {available}")
-
-	return DEMODULATORS[modulation]
