@@ -22,7 +22,7 @@ class RadioScanner:
 	Scans bands asynchronously and detects active channels based on SNR
 	"""
 
-	def __init__ (self, config_path:str='config.yaml', band_name:str='pmr', device_type:str='rtlsdr', device_index:int=0, config:typing.Any|None=None) -> None:
+	def __init__ (self, config_path: str='config.yaml', band_name: str='pmr', device_type: str='rtlsdr', device_index: int=0, config: typing.Any|None=None) -> None:
 
 		"""
 		Initialize the scanner with configuration
@@ -44,7 +44,6 @@ class RadioScanner:
 		self.device_index = device_index
 
 		if band_name not in self.config.bands:
-
 			available = ', '.join(self.config.bands.keys())
 			raise KeyError(f"Band '{band_name}' not found in configuration. Available bands: {available}")
 
@@ -52,21 +51,15 @@ class RadioScanner:
 		self.scanner_config = self.config.scanner
 		self.recording_config = self.config.recording
 
-		# Extract band parameters
 		self.freq_start = self.band_config.freq_start
 		self.freq_end = self.band_config.freq_end
-
 		self.channel_spacing = self.band_config.channel_spacing
-
 		self.channel_width = self.band_config.channel_width
-
 		self.sample_rate = self.band_config.sample_rate
 		self.snr_threshold_db = self.band_config.snr_threshold_db
 		self.snr_threshold_off_db = self.snr_threshold_db - sdr_scanner.constants.HYSTERESIS_DB
 
-		# Validate SNR threshold
 		if self.snr_threshold_db <= sdr_scanner.constants.HYSTERESIS_DB:
-
 			logger.error(f"CONFIG ERROR: Band '{band_name}' has snr_threshold_db ({self.snr_threshold_db} dB) <= HYSTERESIS_DB ({sdr_scanner.constants.HYSTERESIS_DB} dB)")
 			logger.error(f"This would result in snr_threshold_off_db = {self.snr_threshold_off_db} dB")
 			logger.error(f"Channels would never turn OFF because SNR rarely drops to 0 or below")
@@ -75,7 +68,6 @@ class RadioScanner:
 
 		self.sdr_gain_db = self.band_config.sdr_gain_db
 
-		# Recording parameters
 		self.modulation = self.band_config.modulation
 		self.recording_enabled = self.band_config.recording_enabled
 		self.audio_sample_rate = self.recording_config.audio_sample_rate
@@ -184,7 +176,7 @@ class RadioScanner:
 		logger.info(f"Recording: {status}")
 
 
-	def _calculate_channels(self) -> list[float]:
+	def _calculate_channels (self) -> list[float]:
 
 		"""
 		Calculate all channel frequencies in the band
@@ -328,44 +320,35 @@ class RadioScanner:
 		"""
 
 		self.noise_indices = []
-
 		sorted_channels = sorted(self.all_channels)
 
-		# Calculate observable frequency range
 		observable_span = self.sample_rate
 		observable_min_freq = self.center_freq - observable_span / 2
 		observable_max_freq = self.center_freq + observable_span / 2
 
-		# Region before first channel (use edge of observable range, not band definition)
 		first_channel = sorted_channels[0]
 		first_channel_low = first_channel - self.channel_width / 2
-
-		# Use the higher of: (observable minimum) or (band start - margin)
 		noise_start_freq = max(observable_min_freq, self.freq_start - self.band_edge_margin_hz)
 
 		band_start_idx = numpy.searchsorted(self.freqs, noise_start_freq)
 		first_channel_idx = numpy.searchsorted(self.freqs, first_channel_low)
 
 		gap_hz = (first_channel_low - noise_start_freq) / 1e3
+
 		if first_channel_idx > band_start_idx:
 			self.noise_indices.append((band_start_idx, first_channel_idx))
 			logger.debug(f"Edge margin BEFORE first channel: {gap_hz:.1f} kHz ({first_channel_idx - band_start_idx} bins)")
 		else:
 			logger.debug(f"No gap before first channel (gap would be {gap_hz:.1f} kHz)")
 
-		# Gaps between channels
-
 		inter_channel_gaps = 0
 
 		for i in range(len(sorted_channels) - 1):
-
 			ch1 = sorted_channels[i]
 			ch2 = sorted_channels[i + 1]
 
 			ch1_high = ch1 + self.channel_width / 2
 			ch2_low = ch2 - self.channel_width / 2
-
-			# Only use gap if there's actually space between channels
 
 			if ch2_low <= ch1_high:
 				continue
@@ -374,17 +357,13 @@ class RadioScanner:
 			idx_end = numpy.searchsorted(self.freqs, ch2_low)
 
 			if idx_end > idx_start:
-
 				gap_hz = (ch2_low - ch1_high) / 1e3
 				self.noise_indices.append((idx_start, idx_end))
 				inter_channel_gaps += 1
 				logger.debug(f"Inter-channel gap {inter_channel_gaps}: {gap_hz:.1f} kHz ({idx_end - idx_start} bins)")
 
-		# Region after last channel (use edge of observable range, not band definition)
 		last_channel = sorted_channels[-1]
 		last_channel_high = last_channel + self.channel_width / 2
-
-		# Use the lower of: (observable maximum) or (band end + margin)
 		noise_end_freq = min(observable_max_freq, self.freq_end + self.band_edge_margin_hz)
 
 		last_channel_idx = numpy.searchsorted(self.freqs, last_channel_high)
@@ -393,12 +372,9 @@ class RadioScanner:
 		gap_hz = (noise_end_freq - last_channel_high) / 1e3
 
 		if band_end_idx > last_channel_idx:
-
 			self.noise_indices.append((last_channel_idx, band_end_idx))
 			logger.debug(f"Edge margin AFTER last channel: {gap_hz:.1f} kHz ({band_end_idx - last_channel_idx} bins)")
-
 		else:
-
 			logger.debug(f"No gap after last channel (gap would be {gap_hz:.1f} kHz)")
 
 		total_noise_bins = sum(end - start for start, end in self.noise_indices)
@@ -432,33 +408,28 @@ class RadioScanner:
 		sample_size = 256 * 1024
 
 		for _ in range(3):
-
 			self.sdr.read_samples(sample_size)
 			time.sleep(0.1)
 
 		freq_correction_ppm_list = []
 		peak_magnitudes = []
-		magnitude_db = None  # Will be set in loop, used for noise floor calculation
+		magnitude_db = None
 
 		logger.info(f"Calibrating SDR using known signal at {known_freq/1e6:.3f} MHz within {bandwidth/1e3:.0f} kHz bandwidth. This will take a few seconds...")
 
 		for iteration in range(iterations, 0, -1):
-
 			logger.debug(f"Calibration measurement {iterations - iteration + 1}/{iterations}...")
 
-			# Read samples
 			samples = self.sdr.read_samples(sample_size)
 
-			# Apply window and compute FFT
 			window = numpy.hanning(sample_size)
 			fft_result = numpy.fft.fftshift(numpy.fft.fft(samples * window))
 			freqs = numpy.fft.fftshift(numpy.fft.fftfreq(sample_size, 1 / self.sdr.sample_rate))
 			magnitude_db = 20 * numpy.log10(numpy.abs(fft_result) + 1e-10)
 
-			# Find peak frequency within expected range (±50 kHz)
-			# This prevents locking onto wrong signals or noise spikes
 			search_range_hz = 50e3
 			freq_mask = numpy.abs(freqs) < search_range_hz
+
 			if numpy.sum(freq_mask) == 0:
 				logger.warning(f"No frequency bins within ±{search_range_hz/1e3:.0f} kHz search range")
 				continue
@@ -468,14 +439,11 @@ class RadioScanner:
 			measured_freq = self.sdr.center_freq + freqs_filtered[peak_index_local]
 			peak_mag = magnitude_db[freq_mask][peak_index_local]
 
-			# Store peak magnitude for signal validation
 			peak_magnitudes.append(peak_mag)
 
-			# Calculate PPM error (divide by known_freq, not center_freq)
 			freq_error_ppm = (measured_freq - known_freq) / known_freq * 1e6
 			freq_correction_ppm_list.append(freq_error_ppm)
 
-			# Settling delay between measurements
 			time.sleep(0.2)
 
 		# Bail out if no valid measurements were captured
@@ -567,7 +535,7 @@ class RadioScanner:
 		# Now that we know sample rate is set, precompute FFT parameters
 		self._precompute_fft_params()
 
-	async def _cleanup_sdr(self) -> None:
+	async def _cleanup_sdr (self) -> None:
 		"""Clean up SDR resources and close any active recordings"""
 		# Close all active recordings first
 		for channel_freq in list(self.channel_recorders.keys()):
@@ -581,7 +549,7 @@ class RadioScanner:
 			except Exception as e:
 				logger.warning(f"Error closing SDR device (this is normal on interrupt): {e}")
 
-	def _safe_queue_put(self, samples: numpy.typing.NDArray[numpy.complex64]) -> None:
+	def _safe_queue_put (self, samples: numpy.typing.NDArray[numpy.complex64]) -> None:
 		"""
 		Safely put samples in queue, dropping them if queue is full
 		This runs on the event loop thread, not the callback thread
@@ -592,7 +560,7 @@ class RadioScanner:
 			# Drop samples if consumer is behind
 			logger.warning("Sample queue full; dropping samples")
 
-	def _sdr_callback(self, samples: numpy.typing.NDArray[numpy.complex64], _context: typing.Any) -> None:
+	def _sdr_callback (self, samples: numpy.typing.NDArray[numpy.complex64], _context: typing.Any) -> None:
 		"""
 		Callback for async SDR streaming (runs in librtlsdr background thread)
 
@@ -606,7 +574,7 @@ class RadioScanner:
 			# Use wrapper function to catch QueueFull exceptions in the event loop
 			self.loop.call_soon_threadsafe(self._safe_queue_put, samples.copy())
 
-	async def _sample_band_async(self) -> typing.AsyncGenerator[numpy.typing.NDArray[numpy.complex64], None]:
+	async def _sample_band_async (self) -> typing.AsyncGenerator[numpy.typing.NDArray[numpy.complex64], None]:
 		"""
 		Asynchronously sample the band using background streaming
 
@@ -620,7 +588,7 @@ class RadioScanner:
 			samples = await self.sample_queue.get()
 			yield samples
 
-	def _calculate_psd_data(self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
+	def _calculate_psd_data (self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
 		"""
 		Calculate both averaged Welch PSD and per-segment PSDs.
 		Reuses FFT segments to save CPU cycles.
@@ -659,7 +627,7 @@ class RadioScanner:
 
 		return psd_welch_db, segment_psds_db
 
-	def _find_transition_index (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, turning_on: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None) -> int:
+	def _find_transition_index (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, turning_on: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None) -> int:
 
 		"""
 		Find the sample index within a chunk where a channel turns ON or OFF.
@@ -690,7 +658,7 @@ class RadioScanner:
 
 		return len(samples)
 
-	def _prepare_channel_transition (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, channel_index:int, snr_db: float, is_active:bool, current_state:bool, segment_psd:list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None, loop:asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
+	def _prepare_channel_transition (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, channel_index: int, snr_db: float, is_active: bool, current_state: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None, loop: asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
 
 		"""
 		Compute trim boundaries and update state for a channel transition.
@@ -771,7 +739,7 @@ class RadioScanner:
 
 		return numpy.mean(channel_bins)
 
-	def _estimate_noise_floor(self, psd_db: numpy.typing.NDArray[numpy.float64]) -> float:
+	def _estimate_noise_floor (self, psd_db: numpy.typing.NDArray[numpy.float64]) -> float:
 
 		"""
 		Estimate noise floor from inter-channel gaps.
@@ -796,7 +764,7 @@ class RadioScanner:
 		# Use median of noise samples - robust to outliers
 		return numpy.median(noise_samples)
 
-	def _get_channel_powers(self, psd_db: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+	def _get_channel_powers (self, psd_db: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
 
 		"""
 		Vectorized channel power extraction for all channels in scan order.
@@ -830,7 +798,7 @@ class RadioScanner:
 
 		return powers
 
-	def _extract_channel_iq(self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, sample_offset: int = 0) -> numpy.typing.NDArray[numpy.complex64]:
+	def _extract_channel_iq (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, sample_offset: int = 0) -> numpy.typing.NDArray[numpy.complex64]:
 
 		"""
 		Extract IQ samples for a specific channel by frequency shifting and filtering.
@@ -857,7 +825,7 @@ class RadioScanner:
 
 		return filtered
 
-	def _start_channel_recording (self, channel_freq:float, channel_index:int, snr_db:float, loop:asyncio.AbstractEventLoop) -> None:
+	def _start_channel_recording (self, channel_freq: float, channel_index: int, snr_db: float, loop: asyncio.AbstractEventLoop) -> None:
 
 		"""
 		Start recording a channel
@@ -913,7 +881,7 @@ class RadioScanner:
 		# Remove from dictionary
 		del self.channel_recorders[channel_freq]
 
-	def _process_samples(self, samples: numpy.typing.NDArray[numpy.complex64], loop: asyncio.AbstractEventLoop) -> None:
+	def _process_samples (self, samples: numpy.typing.NDArray[numpy.complex64], loop: asyncio.AbstractEventLoop) -> None:
 		"""
 		Process samples to detect active channels
 		"""
@@ -1018,7 +986,7 @@ class RadioScanner:
 					f"({ratio:.2f}x)"
 				)
 
-	async def scan(self) -> None:
+	async def scan (self) -> None:
 		"""
 		Main scanning loop
 		Continuously scans the band and detects active channels

@@ -13,7 +13,7 @@ import sdr_scanner.scanner
 
 logger = logging.getLogger(__name__)
 
-def list_bands(config_path: str) -> None:
+def list_bands (config_path: str) -> None:
 
 	"""
 	List available bands from configuration
@@ -23,7 +23,6 @@ def list_bands(config_path: str) -> None:
 	"""
 
 	try:
-
 		config_data = sdr_scanner.config.load_config(config_path)
 		bands = config_data.bands
 
@@ -31,7 +30,6 @@ def list_bands(config_path: str) -> None:
 		print("=" * 60)
 
 		for band_name, band_config in bands.items():
-
 			freq_start = band_config.freq_start / 1e6
 			freq_end = band_config.freq_end / 1e6
 			modulation = band_config.modulation or 'Unknown'
@@ -45,11 +43,10 @@ def list_bands(config_path: str) -> None:
 		print()
 
 	except Exception as e:
-
 		print(f"Error loading configuration: {e}", file=sys.stderr)
 		sys.exit(1)
 
-async def run_scanner (config_path:str, band_name:str, device_type:str, device_index:int) -> None:
+async def run_scanner (config_path: str, band_name: str, device_type: str, device_index: int) -> None:
 
 	"""
 	Run the scanner with specified parameters
@@ -62,7 +59,6 @@ async def run_scanner (config_path:str, band_name:str, device_type:str, device_i
 	"""
 
 	try:
-
 		config_data = sdr_scanner.config.load_config(config_path)
 
 		if not band_name:
@@ -70,7 +66,6 @@ async def run_scanner (config_path:str, band_name:str, device_type:str, device_i
 			sys.exit(1)
 
 		if band_name not in config_data.bands:
-
 			available = ', '.join(config_data.bands.keys())
 			logger.error(f"Band '{band_name}' not found. Available bands: {available}")
 			sys.exit(1)
@@ -86,15 +81,13 @@ async def run_scanner (config_path:str, band_name:str, device_type:str, device_i
 		await scan.scan()
 
 	except KeyboardInterrupt:
-
 		logger.info("Scan interrupted by user")
 
 	except Exception as e:
-
 		logger.error(f"Error running scanner: {e}", exc_info=True)
 		sys.exit(1)
 
-def main() -> int:
+def main () -> int:
 
 	"""
 	Main entry point for CLI
@@ -154,7 +147,6 @@ Examples:
 	args = parser.parse_args()
 
 	if args.list_bands:
-
 		list_bands(args.config)
 		return 0
 
@@ -163,7 +155,6 @@ Examples:
 		return 1
 
 	try:
-
 		asyncio.run(run_scanner(config_path=args.config, band_name=args.band, device_type=args.device_type, device_index=args.device_index))
 		return 0
 
@@ -174,5 +165,4 @@ Examples:
 		return 1
 
 if __name__ == '__main__':
-
 	sys.exit(main())

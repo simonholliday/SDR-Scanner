@@ -5,7 +5,8 @@ Device abstraction layer for SDR hardware
 import typing
 
 
-def create_device(device_type: str, device_index: int = 0) -> typing.Any:
+def create_device (device_type: str, device_index: int = 0) -> typing.Any:
+
 	"""
 	Factory function to create SDR device instances
 
@@ -19,7 +20,7 @@ def create_device(device_type: str, device_index: int = 0) -> typing.Any:
 	Raises:
 		ValueError: If device_type is not supported
 	"""
-	# Import here to avoid circular imports
+
 	import sdr_scanner.devices.rtlsdr
 	import sdr_scanner.devices.hackrf
 

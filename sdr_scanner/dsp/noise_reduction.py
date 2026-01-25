@@ -8,7 +8,7 @@ import numpy
 import scipy.signal
 
 
-def _frame_rms(audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray:
+def _frame_rms (audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray:
 	if audio.size < frame_len:
 		return numpy.array([numpy.sqrt(numpy.mean(audio * audio))], dtype=numpy.float32)
 	n_frames = 1 + (audio.size - frame_len) // hop
@@ -20,7 +20,7 @@ def _frame_rms(audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray:
 	return rms
 
 
-def _noise_clip_from_percentile(
+def _noise_clip_from_percentile (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	frame_ms: float = 20.0,
@@ -42,7 +42,7 @@ def _noise_clip_from_percentile(
 	return numpy.concatenate(noise_frames)
 
 
-def apply_noisereduce(
+def apply_noisereduce (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	frame_ms: float = 20.0,
@@ -52,9 +52,11 @@ def apply_noisereduce(
 	time_mask_smooth_ms: float = 100.0,
 	n_fft: int = 1024
 ) -> numpy.ndarray:
+
 	"""
-Apply noise reduction using the noisereduce library with a noise clip estimate.
-"""
+	Apply noise reduction using the noisereduce library with a noise clip estimate.
+	"""
+
 	if audio.size == 0:
 		return audio.astype(numpy.float32, copy=False)
 	if audio.size < n_fft:
@@ -82,15 +84,17 @@ Apply noise reduction using the noisereduce library with a noise clip estimate.
 	return reduced.astype(numpy.float32, copy=False)
 
 
-def apply_spectral_subtraction(
+def apply_spectral_subtraction (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	oversub: float = 0.7,
 	floor: float = 0.06
 ) -> numpy.ndarray:
+
 	"""
-Spectral subtraction with gain smoothing to reduce musical noise.
-"""
+	Spectral subtraction with gain smoothing to reduce musical noise.
+	"""
+
 	if audio.size == 0:
 		return audio.astype(numpy.float32, copy=False)
 

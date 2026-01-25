@@ -11,12 +11,13 @@ import scipy.signal
 logger = logging.getLogger(__name__)
 
 
-def decimate_audio(
+def decimate_audio (
 	signal: numpy.typing.NDArray,
 	sample_rate: float,
 	audio_sample_rate: int,
 	state: dict
 ) -> tuple[numpy.typing.NDArray[numpy.float32], dict]:
+
 	"""
 	Decimate signal from sample_rate to audio_sample_rate with state preservation.
 
@@ -29,6 +30,7 @@ def decimate_audio(
 	Returns:
 		Tuple of (decimated_samples, updated_state)
 	"""
+
 	sr = int(round(sample_rate))
 	ar = int(audio_sample_rate)
 	if sr <= 0 or ar <= 0:
@@ -105,12 +107,13 @@ def decimate_audio(
 	return audio_samples, state
 
 
-def apply_fade(
+def apply_fade (
 	audio: numpy.typing.NDArray[numpy.float32],
 	sample_rate: int,
 	fade_in_ms: float | None,
 	fade_out_ms: float | None
 ) -> numpy.typing.NDArray[numpy.float32]:
+
 	"""
 	Apply linear fade-in/out to a 1-D audio array.
 	If either duration is None, fading is disabled.
@@ -124,6 +127,7 @@ def apply_fade(
 	Returns:
 		Audio signal with fades applied
 	"""
+
 	if fade_in_ms is None or fade_out_ms is None:
 		return audio
 

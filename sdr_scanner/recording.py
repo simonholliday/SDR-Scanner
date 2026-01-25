@@ -26,7 +26,7 @@ class ChannelRecorder:
 	Manages recording for a single channel with memory buffering and async disk writing
 	"""
 
-	def __init__(
+	def __init__ (
 		self,
 		channel_freq: float,
 		channel_index: int,
@@ -39,6 +39,7 @@ class ChannelRecorder:
 		filename_suffix: str = None,
 		soft_limit_drive: float = 2.0
 	) -> None:
+
 		"""
 		Initialize a channel recorder
 
@@ -54,6 +55,7 @@ class ChannelRecorder:
 			filename_suffix: An optional string to be added to the auto-generated filename
 			soft_limit_drive: Soft limiter drive amount (higher = stronger limiting)
 		"""
+
 		self.channel_freq = channel_freq
 		self.channel_index = channel_index
 		self.band_name = band_name
@@ -168,7 +170,6 @@ class ChannelRecorder:
 			return
 
 		with self._buffer_lock:
-
 			if self.max_buffer_samples <= 0:
 				return
 
@@ -178,7 +179,6 @@ class ChannelRecorder:
 				return
 
 			if incoming_len >= self.max_buffer_samples:
-
 				dropped = self.audio_buffer_samples + (incoming_len - self.max_buffer_samples)
 
 				if dropped > 0:
@@ -194,14 +194,13 @@ class ChannelRecorder:
 			overflow = self.audio_buffer_samples + incoming_len - self.max_buffer_samples
 
 			if overflow > 0:
-
 				self._drop_oldest_samples(overflow)
 				logger.warning(f"Channel {self.channel_index}: Buffer overflow, dropping {overflow} oldest samples")
 
 			self.audio_buffer.append(samples)
 			self.audio_buffer_samples += incoming_len
 
-	def _drop_oldest_samples (self, count:int) -> None:
+	def _drop_oldest_samples (self, count: int) -> None:
 
 		"""
 		Drop a number of samples from the start of the chunked buffer.
@@ -227,14 +226,11 @@ class ChannelRecorder:
 		"""
 
 		try:
-
 			while not self.closing:
-
 				await asyncio.sleep(self.disk_flush_interval)
 				await self._flush_buffer_to_disk()
 
 		except asyncio.CancelledError:
-			# Let close() handle final flush and file shutdown.
 			return
 
 	async def _flush_buffer_to_disk (self) -> None:
@@ -244,7 +240,6 @@ class ChannelRecorder:
 		"""
 
 		with self._buffer_lock:
-
 			if self.audio_buffer_samples == 0:
 				return
 
@@ -258,7 +253,7 @@ class ChannelRecorder:
 
 		await asyncio.get_running_loop().run_in_executor(None, self._write_samples_to_wav, samples_to_write)
 
-	def _write_samples_to_wav (self, samples:numpy.typing.NDArray[numpy.float32]) -> None:
+	def _write_samples_to_wav (self, samples: numpy.typing.NDArray[numpy.float32]) -> None:
 
 		"""
 		Write audio samples to WAV file (runs in executor thread)
@@ -279,10 +274,7 @@ class ChannelRecorder:
 			if den != 0.0:
 				samples = numpy.tanh(samples * drive) / den
 
-		# It will automatically convert to int16 internally
 		with self._write_lock:
-
-			# Write to WAV file (soundfile handles float32 to int16 conversion)
 			self.wav_file.write(samples)
 			self.total_samples_written += len(samples)
 
@@ -294,10 +286,7 @@ class ChannelRecorder:
 
 		self.closing = True
 
-		# Cancel flush task if running
-		# Note: flush_task is a concurrent.futures.Future, not an asyncio.Task
 		if self.flush_task and not self.flush_task.done():
-
 			self.flush_task.cancel()
 
 			try:
@@ -309,13 +298,10 @@ class ChannelRecorder:
 			except Exception:
 				pass
 
-		# Final flush of any remaining samples
 		await self._flush_buffer_to_disk()
 
-		# Close WAV file (this writes headers)
 		self.wav_file.close()
 
-		# Write BEXT chunk for Broadcast Wave Format
 		if self.bext_metadata:
 			self._append_bext_chunk()
 

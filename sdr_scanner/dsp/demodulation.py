@@ -11,12 +11,13 @@ import sdr_scanner.constants
 import sdr_scanner.dsp.filters
 
 
-def demodulate_nfm(
+def demodulate_nfm (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
 	sample_rate: float,
 	audio_sample_rate: int,
 	state: dict | None = None
 ) -> tuple[numpy.typing.NDArray[numpy.float32], dict]:
+
 	"""
 	Demodulate Narrow FM (NFM) from IQ samples with state preservation
 
@@ -29,14 +30,13 @@ def demodulate_nfm(
 	Returns:
 		Tuple of (audio_samples, new_state) where new_state contains updated filter state
 	"""
+
 	if len(iq_samples) == 0:
 		return numpy.array([], dtype=numpy.float32), state if state else {}
 
-	# Initialize state if needed
 	if state is None:
 		state = {}
 
-	# FM demodulation: instantaneous frequency = d(phase)/dt
 	if 'last_iq' not in state:
 		state['last_iq'] = iq_samples[0]
 
@@ -44,7 +44,6 @@ def demodulate_nfm(
 	demod = numpy.angle(iq_with_prev[1:] * numpy.conj(iq_with_prev[:-1]))
 	state['last_iq'] = iq_samples[-1]
 
-	# De-emphasis filter
 	tau = sdr_scanner.constants.NFM_DEEMPHASIS_TAU
 	alpha = 1.0 / (1.0 + sample_rate * tau)
 
@@ -55,25 +54,22 @@ def demodulate_nfm(
 		[alpha], [1, alpha - 1], demod, zi=state['deemph_zi']
 	)
 
-	# DC removal - subtract block mean
 	demod_dc_blocked = demod_deemph - numpy.mean(demod_deemph)
 
-	# Normalize to approximate [-1, 1] range
 	demod_normalized = demod_dc_blocked / (2 * numpy.pi * sdr_scanner.constants.NFM_DEVIATION_HZ / sample_rate)
 
-	# Clip to [-1, 1] range
 	demod_normalized = numpy.clip(demod_normalized, -1.0, 1.0)
 
-	# Decimate to audio sample rate
 	return sdr_scanner.dsp.filters.decimate_audio(demod_normalized, sample_rate, audio_sample_rate, state)
 
 
-def demodulate_am(
+def demodulate_am (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
 	sample_rate: float,
 	audio_sample_rate: int,
 	state: dict | None = None
 ) -> tuple[numpy.typing.NDArray[numpy.float32], dict]:
+
 	"""
 	Demodulate Amplitude Modulation (AM) from IQ samples with state preservation
 
@@ -86,22 +82,22 @@ def demodulate_am(
 	Returns:
 		Tuple of (audio_samples, new_state) where new_state contains updated filter state
 	"""
+
 	if len(iq_samples) == 0:
 		return numpy.array([], dtype=numpy.float32), state if state else {}
 
 	if state is None:
 		state = {}
 
-	# AM demodulation - extract magnitude (envelope detection)
 	demod = numpy.abs(iq_samples)
 
-	# Decimate to audio sample rate first to reduce CPU load.
 	audio, state = sdr_scanner.dsp.filters.decimate_audio(demod, sample_rate, audio_sample_rate, state)
+
 	if len(audio) == 0:
 		return audio.astype(numpy.float32, copy=False), state
 
-	# DC removal at audio rate with state to avoid boundary steps.
 	cutoff_hz = 30.0
+
 	if state.get('am_dc_fs') != audio_sample_rate or 'am_dc_sos' not in state:
 		state['am_dc_sos'] = scipy.signal.butter(1, cutoff_hz, btype='highpass', fs=audio_sample_rate, output='sos')
 		state['am_dc_zi'] = scipy.signal.sosfilt_zi(state['am_dc_sos']) * 0.0
@@ -115,20 +111,22 @@ def demodulate_am(
 		zi=state['am_dc_zi']
 	)
 
-	# Continuous AGC at audio rate to avoid slice-boundary gain steps
 	env = numpy.abs(audio)
 	attack_ms = sdr_scanner.constants.AM_AGC_ATTACK_MS
 	release_ms = sdr_scanner.constants.AM_AGC_RELEASE_MS
+
 	if attack_ms <= 0:
 		attack_coeff = 0.0
 	else:
 		attack_coeff = numpy.exp(-1.0 / (audio_sample_rate * (attack_ms / 1000.0)))
+
 	if release_ms <= 0:
 		release_coeff = 0.0
 	else:
 		release_coeff = numpy.exp(-1.0 / (audio_sample_rate * (release_ms / 1000.0)))
 
 	level = state.get('am_agc_level')
+
 	if level is None:
 		level = max(float(numpy.mean(env)), sdr_scanner.constants.AM_AGC_FLOOR)
 
@@ -138,21 +136,24 @@ def demodulate_am(
 
 	for i in range(env.size):
 		sample_env = float(env[i])
+
 		if sample_env >= min_update:
 			if sample_env > level:
 				level = attack_coeff * level + (1.0 - attack_coeff) * sample_env
 			else:
 				level = release_coeff * level + (1.0 - release_coeff) * sample_env
+
 			if level < floor:
 				level = floor
+
 		output[i] = audio[i] / level if level > 0.0 else audio[i]
 
 	state['am_agc_level'] = level
 
 	output *= sdr_scanner.constants.AM_OUTPUT_GAIN
 
-	# Clip to [-1.0, 1.0] range
 	output = numpy.clip(output, -1.0, 1.0)
+
 	return output.astype(numpy.float32, copy=False), state
 
 
@@ -165,7 +166,8 @@ DEMODULATORS: dict[str, typing.Callable] = {
 }
 
 
-def get_demodulator(modulation: str) -> typing.Callable:
+def get_demodulator (modulation: str) -> typing.Callable:
+
 	"""
 	Get demodulator function for a specific modulation type
 
@@ -178,6 +180,7 @@ def get_demodulator(modulation: str) -> typing.Callable:
 	Raises:
 		KeyError: If modulation type is not supported
 	"""
+
 	if modulation not in DEMODULATORS:
 		available = ', '.join(DEMODULATORS.keys())
 		raise KeyError(f"Unsupported modulation '{modulation}'. Available: {available}")
