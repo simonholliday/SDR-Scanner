@@ -1,5 +1,15 @@
 """
-Abstract base class for SDR device implementations
+Abstract base class for SDR device implementations.
+
+Defines a unified interface for different SDR hardware (RTL-SDR, HackRF, etc.).
+All device implementations must provide methods for:
+- Setting sample rate and center frequency
+- Configuring gain (manual or automatic)
+- Reading IQ samples asynchronously via callbacks
+- Resource cleanup
+
+This abstraction allows the scanner to work with different hardware
+without knowing the specific device type.
 """
 
 import typing
@@ -8,7 +18,18 @@ import abc
 
 class BaseDevice(abc.ABC):
 	"""
-	Abstract base class defining the interface for SDR devices
+	Abstract base class defining the interface for SDR devices.
+
+	This class uses Python's ABC (Abstract Base Class) pattern to enforce
+	a consistent interface across different SDR hardware implementations.
+	Subclasses must implement all abstract methods and properties.
+
+	The interface is designed around asynchronous sample reading:
+	- Set hardware parameters (frequency, sample rate, gain)
+	- Start async streaming with a callback function
+	- Hardware continuously calls the callback with IQ sample blocks
+	- Cancel streaming when done
+	- Clean up resources
 
 	All device implementations must provide these properties and methods.
 	"""

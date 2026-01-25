@@ -1,5 +1,14 @@
 """
-RTL-SDR device implementation
+RTL-SDR device implementation.
+
+RTL-SDR is a low-cost SDR receiver based on TV tuner dongles (RTL2832U chip).
+Typical specifications:
+- Frequency range: 24 MHz - 1766 MHz (with gaps)
+- Sample rate: up to 2.4 MHz (typical: 2.048 MHz)
+- 8-bit ADC resolution
+- USB 2.0 interface
+
+This implementation wraps the pyrtlsdr library to conform to the BaseDevice interface.
 """
 
 import rtlsdr
@@ -57,32 +66,54 @@ class RtlSdrDevice(sdr_scanner.devices.base.BaseDevice):
 
 	@property
 	def freq_correction (self) -> int:
-		"""Get the current frequency correction in PPM"""
+		"""
+		Get the current frequency correction in PPM (Parts Per Million).
+
+		RTL-SDR uses a crystal oscillator that can drift with temperature.
+		PPM correction compensates for this: +10 PPM means the crystal is
+		10 parts per million fast, so we adjust down by that amount.
+		"""
 		return self._device.freq_correction
 
 	@freq_correction.setter
 	def freq_correction (self, value: int) -> None:
-		"""Set the frequency correction in PPM"""
+		"""
+		Set the frequency correction in PPM (Parts Per Million).
+
+		Positive values: crystal is fast, correct downward
+		Negative values: crystal is slow, correct upward
+		Typical range: -100 to +100 PPM
+		"""
 		self._device.freq_correction = value
 
 	@property
 	def serial (self) -> str | None:
+		"""
+		Get the device serial number if available.
 
-		"""Get the device serial number if available."""
+		Serial numbers are useful for identifying specific dongles when
+		multiple RTL-SDR devices are connected. Returns None if the
+		serial cannot be determined.
+		"""
 
 		serial = None
 
 		try:
+			# Query all connected RTL-SDR serial numbers
 			serials = rtlsdr.RtlSdr.get_device_serial_addresses()
 
+			# Get serial for our device index
 			if 0 <= self._device_index < len(serials):
 				serial = serials[self._device_index]
 		except Exception:
+			# Some RTL-SDR dongles don't have readable serial numbers
 			serial = None
 
+		# Convert bytes to string if necessary
 		if isinstance(serial, bytes):
 			serial = serial.decode('ascii', errors='replace')
 
+		# Clean up whitespace and handle empty strings
 		if isinstance(serial, str):
 			serial = serial.strip()
 			return serial if serial else None
