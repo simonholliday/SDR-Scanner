@@ -176,6 +176,11 @@ class RadioScanner:
 		self.dropped_samples = 0
 		self.drop_lock = threading.Lock()
 
+		# Queue monitoring for backpressure warnings
+		# Track when we last warned about queue depth to avoid log spam
+		self.last_queue_warning_time = 0.0
+		self.queue_warning_interval = 5.0  # Warn at most once every 5 seconds
+
 		# Sample queue for async streaming
 		self.sample_queue: asyncio.Queue | None = None
 		self.loop: asyncio.AbstractEventLoop | None = None
@@ -702,13 +707,28 @@ class RadioScanner:
 
 		If samples are dropped, we track the count so we can advance the phase
 		counter accordingly (maintaining phase continuity for frequency shifting).
+
+		Queue depth monitoring warns when the queue is filling up, giving early
+		notice that processing may be falling behind. Warnings are throttled to
+		avoid log spam (at most one warning per 5 seconds).
 		"""
+		# Check queue depth for early warning (throttled to avoid log spam)
+		current_time = time.time()
+		queue_size = self.sample_queue.qsize()
+		max_size = self.sample_queue_maxsize
+		fill_ratio = queue_size / max_size if max_size > 0 else 0.0
+
+		# Warn when queue is 70% full (early warning of potential overrun)
+		if fill_ratio >= 0.7 and (current_time - self.last_queue_warning_time) >= self.queue_warning_interval:
+			logger.warning(f"Sample queue backpressure: {queue_size}/{max_size} ({fill_ratio:.0%}) - processing may be falling behind")
+			self.last_queue_warning_time = current_time
+
 		try:
 			self.sample_queue.put_nowait(samples)
 		except asyncio.QueueFull:
 			# Processing is falling behind - drop this block of samples
 			# This will cause gaps in recordings but prevents unbounded memory growth
-			logger.warning("Sample queue full; dropping samples")
+			logger.warning(f"Sample queue full ({queue_size}/{max_size}); dropping {len(samples)} samples")
 
 			# Track how many samples were dropped for phase continuity
 			# The processing thread will advance sample_counter to compensate
