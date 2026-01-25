@@ -11,7 +11,7 @@ import scipy.signal
 logger = logging.getLogger(__name__)
 
 
-def decimate_audio(
+def decimate_audio (
 	signal: numpy.typing.NDArray,
 	sample_rate: float,
 	audio_sample_rate: int,
@@ -105,7 +105,7 @@ def decimate_audio(
 	return audio_samples, state
 
 
-def apply_fade(
+def apply_fade (
 	audio: numpy.typing.NDArray[numpy.float32],
 	sample_rate: int,
 	fade_in_ms: float | None,

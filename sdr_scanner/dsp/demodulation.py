@@ -11,7 +11,7 @@ import sdr_scanner.constants
 import sdr_scanner.dsp.filters
 
 
-def demodulate_nfm(
+def demodulate_nfm (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
 	sample_rate: float,
 	audio_sample_rate: int,
@@ -74,7 +74,7 @@ def demodulate_nfm(
 	return sdr_scanner.dsp.filters.decimate_audio(demod_normalized, sample_rate, audio_sample_rate, state)
 
 
-def demodulate_am(
+def demodulate_am (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
 	sample_rate: float,
 	audio_sample_rate: int,

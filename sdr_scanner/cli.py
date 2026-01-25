@@ -13,7 +13,7 @@ import sdr_scanner.scanner
 
 logger = logging.getLogger(__name__)
 
-def list_bands(config_path: str) -> None:
+def list_bands (config_path: str) -> None:
 
 	"""
 	List available bands from configuration
@@ -94,7 +94,7 @@ async def run_scanner (config_path:str, band_name:str, device_type:str, device_i
 		logger.error(f"Error running scanner: {e}", exc_info=True)
 		sys.exit(1)
 
-def main() -> int:
+def main () -> int:
 
 	"""
 	Main entry point for CLI
@@ -112,6 +112,7 @@ def main() -> int:
 		description='SDR Scanner - Software-defined radio band scanner',
 		formatter_class=argparse.RawDescriptionHelpFormatter,
 		epilog="""
+
 Examples:
   %(prog)s --band pmr                    # Scan PMR band with RTL-SDR
   %(prog)s --band marine --device-type hackrf  # Scan marine band with HackRF

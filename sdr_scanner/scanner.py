@@ -184,7 +184,7 @@ class RadioScanner:
 		logger.info(f"Recording: {status}")
 
 
-	def _calculate_channels(self) -> list[float]:
+	def _calculate_channels (self) -> list[float]:
 
 		"""
 		Calculate all channel frequencies in the band
@@ -567,8 +567,10 @@ class RadioScanner:
 		# Now that we know sample rate is set, precompute FFT parameters
 		self._precompute_fft_params()
 
-	async def _cleanup_sdr(self) -> None:
+	async def _cleanup_sdr (self) -> None:
+
 		"""Clean up SDR resources and close any active recordings"""
+
 		# Close all active recordings first
 		for channel_freq in list(self.channel_recorders.keys()):
 			await self._stop_channel_recording(channel_freq)
@@ -581,7 +583,8 @@ class RadioScanner:
 			except Exception as e:
 				logger.warning(f"Error closing SDR device (this is normal on interrupt): {e}")
 
-	def _safe_queue_put(self, samples: numpy.typing.NDArray[numpy.complex64]) -> None:
+	def _safe_queue_put (self, samples: numpy.typing.NDArray[numpy.complex64]) -> None:
+
 		"""
 		Safely put samples in queue, dropping them if queue is full
 		This runs on the event loop thread, not the callback thread
@@ -592,7 +595,7 @@ class RadioScanner:
 			# Drop samples if consumer is behind
 			logger.warning("Sample queue full; dropping samples")
 
-	def _sdr_callback(self, samples: numpy.typing.NDArray[numpy.complex64], _context: typing.Any) -> None:
+	def _sdr_callback (self, samples: numpy.typing.NDArray[numpy.complex64], _context: typing.Any) -> None:
 		"""
 		Callback for async SDR streaming (runs in librtlsdr background thread)
 
@@ -606,7 +609,7 @@ class RadioScanner:
 			# ascontiguousarray ensures optimal cache-line alignment for faster processing
 			self.loop.call_soon_threadsafe(self._safe_queue_put, numpy.ascontiguousarray(samples))
 
-	async def _sample_band_async(self) -> typing.AsyncGenerator[numpy.typing.NDArray[numpy.complex64], None]:
+	async def _sample_band_async (self) -> typing.AsyncGenerator[numpy.typing.NDArray[numpy.complex64], None]:
 		"""
 		Asynchronously sample the band using background streaming
 
@@ -620,7 +623,7 @@ class RadioScanner:
 			samples = await self.sample_queue.get()
 			yield samples
 
-	def _calculate_psd_data(self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
+	def _calculate_psd_data (self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
 		"""
 		Calculate both averaged Welch PSD and per-segment PSDs.
 		Reuses FFT segments to save CPU cycles.
@@ -771,7 +774,7 @@ class RadioScanner:
 
 		return numpy.mean(channel_bins)
 
-	def _estimate_noise_floor(self, psd_db: numpy.typing.NDArray[numpy.float64]) -> float:
+	def _estimate_noise_floor (self, psd_db: numpy.typing.NDArray[numpy.float64]) -> float:
 
 		"""
 		Estimate noise floor from inter-channel gaps.
@@ -796,7 +799,7 @@ class RadioScanner:
 		# Use median of noise samples - robust to outliers
 		return numpy.median(noise_samples)
 
-	def _get_channel_powers(self, psd_db: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+	def _get_channel_powers (self, psd_db: numpy.typing.NDArray[numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
 
 		"""
 		Vectorized channel power extraction for all channels in scan order.
@@ -830,7 +833,7 @@ class RadioScanner:
 
 		return powers
 
-	def _extract_channel_iq(self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, sample_offset: int = 0) -> numpy.typing.NDArray[numpy.complex64]:
+	def _extract_channel_iq (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, sample_offset: int = 0) -> numpy.typing.NDArray[numpy.complex64]:
 
 		"""
 		Extract IQ samples for a specific channel by frequency shifting and filtering.
@@ -913,7 +916,7 @@ class RadioScanner:
 		# Remove from dictionary
 		del self.channel_recorders[channel_freq]
 
-	def _process_samples(self, samples: numpy.typing.NDArray[numpy.complex64], loop: asyncio.AbstractEventLoop) -> None:
+	def _process_samples (self, samples: numpy.typing.NDArray[numpy.complex64], loop: asyncio.AbstractEventLoop) -> None:
 		"""
 		Process samples to detect active channels
 		"""
@@ -1027,7 +1030,7 @@ class RadioScanner:
 					f"({ratio:.2f}x)"
 				)
 
-	async def scan(self) -> None:
+	async def scan (self) -> None:
 		"""
 		Main scanning loop
 		Continuously scans the band and detects active channels
@@ -1043,7 +1046,7 @@ class RadioScanner:
 
 			# Start async SDR streaming in background thread (non-blocking)
 			# This must run in an executor because read_samples_async blocks
-			async def start_streaming():
+			async def start_streaming () -> None:
 				await self.loop.run_in_executor(
 					None,
 					self.sdr.read_samples_async,

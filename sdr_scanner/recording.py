@@ -26,7 +26,7 @@ class ChannelRecorder:
 	Manages recording for a single channel with memory buffering and async disk writing
 	"""
 
-	def __init__(
+	def __init__ (
 		self,
 		channel_freq: float,
 		channel_index: int,

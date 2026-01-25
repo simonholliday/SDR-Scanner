@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import typing
 
+import pydantic
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 import sdr_scanner.constants
 
 
-def _normalize_label(value: typing.Any) -> typing.Any:
+def _normalize_label (value: typing.Any) -> typing.Any:
 	if value is None:
 		return value
 	if isinstance(value, str):
@@ -20,7 +20,7 @@ def _normalize_label(value: typing.Any) -> typing.Any:
 	return value
 
 
-def _normalize_gain(value: typing.Any) -> typing.Any:
+def _normalize_gain (value: typing.Any) -> typing.Any:
 	if value is None:
 		return 'auto'
 	if isinstance(value, str):
@@ -33,80 +33,80 @@ def _normalize_gain(value: typing.Any) -> typing.Any:
 			raise ValueError("sdr_gain_db must be a number or 'auto'") from exc
 	return float(value)
 
-class ScannerConfig(BaseModel):
+class ScannerConfig(pydantic.BaseModel):
 	"""Scanner-level configuration."""
 
-	model_config = ConfigDict(extra='forbid')
+	model_config = pydantic.ConfigDict(extra='forbid')
 
-	sdr_device_sample_size: int = Field(gt=0)
-	band_time_slice_ms: int = Field(gt=0)
-	sample_queue_maxsize: int = Field(default=30, gt=0)
-	calibration_frequency_hz: float | None = Field(default=None, gt=0)
+	sdr_device_sample_size: int = pydantic.Field(gt=0)
+	band_time_slice_ms: int = pydantic.Field(gt=0)
+	sample_queue_maxsize: int = pydantic.Field(default=30, gt=0)
+	calibration_frequency_hz: float | None = pydantic.Field(default=None, gt=0)
 
 
-class RecordingConfig(BaseModel):
+class RecordingConfig(pydantic.BaseModel):
 	"""Recording configuration."""
 
-	model_config = ConfigDict(extra='forbid')
+	model_config = pydantic.ConfigDict(extra='forbid')
 
-	buffer_size_seconds: float = Field(default=30.0, ge=0.0)
-	disk_flush_interval_seconds: float = Field(default=5.0, gt=0.0)
-	audio_sample_rate: int = Field(default=16000, gt=0)
+	buffer_size_seconds: float = pydantic.Field(default=30.0, ge=0.0)
+	disk_flush_interval_seconds: float = pydantic.Field(default=5.0, gt=0.0)
+	audio_sample_rate: int = pydantic.Field(default=16000, gt=0)
 	audio_output_dir: str = './audio'
-	fade_in_ms: float | None = Field(default=None, ge=0.0)
-	fade_out_ms: float | None = Field(default=None, ge=0.0)
-	soft_limit_drive: float = Field(default=2.0, gt=0.0)
+	fade_in_ms: float | None = pydantic.Field(default=None, ge=0.0)
+	fade_out_ms: float | None = pydantic.Field(default=None, ge=0.0)
+	soft_limit_drive: float = pydantic.Field(default=2.0, gt=0.0)
 
 
-class BandTypeConfig(BaseModel):
+class BandTypeConfig(pydantic.BaseModel):
 	"""Default settings for a band type (e.g., DMR, TETRA)."""
 
-	model_config = ConfigDict(extra='forbid')
+	model_config = pydantic.ConfigDict(extra='forbid')
 
-	channel_spacing: float | None = Field(default=None, gt=0)
-	sample_rate: float | None = Field(default=None, gt=0)
-	channel_width: float | None = Field(default=None, gt=0)
+	channel_spacing: float | None = pydantic.Field(default=None, gt=0)
+	sample_rate: float | None = pydantic.Field(default=None, gt=0)
+	channel_width: float | None = pydantic.Field(default=None, gt=0)
 	modulation: str | None = None
 	recording_enabled: bool = False
-	snr_threshold_db: float | None = Field(default=None)
+	snr_threshold_db: float | None = pydantic.Field(default=None)
 	sdr_gain_db: float | str | None = 'auto'
 
-	@field_validator('modulation', mode='before')
+	@pydantic.field_validator('modulation', mode='before')
 	@classmethod
-	def _validate_label(cls, value: typing.Any) -> typing.Any:
+	def _validate_label (cls, value: typing.Any) -> typing.Any:
 		return _normalize_label(value)
 
-	@field_validator('sdr_gain_db', mode='before')
+	@pydantic.field_validator('sdr_gain_db', mode='before')
 	@classmethod
-	def _validate_gain(cls, value: typing.Any) -> typing.Any:
+	def _validate_gain (cls, value: typing.Any) -> typing.Any:
 		return _normalize_gain(value)
 
 
-class BandConfig(BaseModel):
+class BandConfig(pydantic.BaseModel):
 	"""Per-band configuration."""
 
-	model_config = ConfigDict(extra='forbid')
+	model_config = pydantic.ConfigDict(extra='forbid')
 
-	freq_start: float = Field(gt=0)
-	freq_end: float = Field(gt=0)
-	channel_spacing: float = Field(gt=0)
-	sample_rate: float = Field(gt=0)
-	channel_width: float | None = Field(default=None, gt=0)
+	freq_start: float = pydantic.Field(gt=0)
+	freq_end: float = pydantic.Field(gt=0)
+	channel_spacing: float = pydantic.Field(gt=0)
+	sample_rate: float = pydantic.Field(gt=0)
+	channel_width: float | None = pydantic.Field(default=None, gt=0)
 	type: str | None = None
 	modulation: str | None = None
 	recording_enabled: bool = False
-	exclude_channel_indices: list[int] = Field(default_factory=list)
-	snr_threshold_db: float = Field(default=12.0)
+	exclude_channel_indices: list[int] = pydantic.Field(default_factory=list)
+	snr_threshold_db: float = pydantic.Field(default=12.0)
 	sdr_gain_db: float | str | None = 'auto'
 
-	@field_validator('modulation', 'type', mode='before')
+	@pydantic.field_validator('modulation', 'type', mode='before')
 	@classmethod
-	def _validate_label(cls, value: typing.Any) -> typing.Any:
+	def _validate_label (cls, value: typing.Any) -> typing.Any:
 		return _normalize_label(value)
 
-	@field_validator('exclude_channel_indices', mode='before')
+	@pydantic.field_validator('exclude_channel_indices', mode='before')
 	@classmethod
-	def _validate_exclusions(cls, value: typing.Any) -> list[int]:
+	def _validate_exclusions (cls, value: typing.Any) -> list[int]:
 		if value is None:
 			return []
 		if not isinstance(value, list):
@@ -119,13 +119,13 @@ class BandConfig(BaseModel):
 			indices.append(idx)
 		return indices
 
-	@field_validator('sdr_gain_db', mode='before')
+	@pydantic.field_validator('sdr_gain_db', mode='before')
 	@classmethod
-	def _validate_gain(cls, value: typing.Any) -> typing.Any:
+	def _validate_gain (cls, value: typing.Any) -> typing.Any:
 		return _normalize_gain(value)
 
-	@model_validator(mode='after')
-	def _validate_band(self) -> 'BandConfig':
+	@pydantic.model_validator(mode='after')
+	def _validate_band (self) -> 'BandConfig':
 		if self.freq_start >= self.freq_end:
 			raise ValueError('freq_start must be less than freq_end')
 		if self.channel_width is None:
@@ -138,24 +138,25 @@ class BandConfig(BaseModel):
 		return self
 
 
-class AppConfig(BaseModel):
+class AppConfig(pydantic.BaseModel):
 	"""Top-level application configuration."""
 
-	model_config = ConfigDict(extra='forbid')
+	model_config = pydantic.ConfigDict(extra='forbid')
 
 	scanner: ScannerConfig
-	recording: RecordingConfig = Field(default_factory=RecordingConfig)
-	band_defaults: dict[str, BandTypeConfig] = Field(default_factory=dict)
+	recording: RecordingConfig = pydantic.Field(default_factory=RecordingConfig)
+	band_defaults: dict[str, BandTypeConfig] = pydantic.Field(default_factory=dict)
 	bands: dict[str, BandConfig]
 
-	@model_validator(mode='after')
-	def _validate_bands(self) -> 'AppConfig':
+	@pydantic.model_validator(mode='after')
+	def _validate_bands (self) -> 'AppConfig':
 		if not self.bands:
 			raise ValueError('bands must contain at least one band')
 		return self
 
 
-def _load_raw_config(config_path: str) -> dict:
+def _load_raw_config (config_path: str) -> dict:
+
 	"""
 	Load raw configuration data from YAML.
 	"""
@@ -168,7 +169,7 @@ def _load_raw_config(config_path: str) -> dict:
 	return data
 
 
-def _apply_band_defaults(data: dict) -> dict:
+def _apply_band_defaults (data: dict) -> dict:
 	"""
 	Merge per-type defaults into bands (band values override defaults).
 	"""
@@ -207,7 +208,7 @@ def _apply_band_defaults(data: dict) -> dict:
 	return merged
 
 
-def load_config(config_path: str) -> AppConfig:
+def load_config (config_path: str) -> AppConfig:
 	"""
 	Load and validate configuration from YAML file.
 	"""
@@ -216,7 +217,7 @@ def load_config(config_path: str) -> AppConfig:
 	return AppConfig.model_validate(data)
 
 
-def validate_config(config: dict | AppConfig) -> AppConfig:
+def validate_config (config: dict | AppConfig) -> AppConfig:
 	"""
 	Validate configuration data and return a typed AppConfig.
 	"""
@@ -225,7 +226,7 @@ def validate_config(config: dict | AppConfig) -> AppConfig:
 	return AppConfig.model_validate(_apply_band_defaults(config))
 
 
-def get_band_config(config: dict | AppConfig, band_name: str) -> BandConfig:
+def get_band_config (config: dict | AppConfig, band_name: str) -> BandConfig:
 	"""
 	Get configuration for a specific band.
 	"""

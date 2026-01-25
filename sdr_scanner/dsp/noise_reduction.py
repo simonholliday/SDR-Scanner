@@ -5,27 +5,29 @@ Noise reduction helpers for demodulated audio.
 from __future__ import annotations
 
 import numpy
+import numpy.lib.stride_tricks
 import scipy.signal
 
 
-def _frame_rms(audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray:
+def _frame_rms (audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray:
+
 	"""Compute RMS values for overlapping frames using vectorized operations."""
+
 	if audio.size < frame_len:
 		return numpy.array([numpy.sqrt(numpy.mean(audio * audio))], dtype=numpy.float32)
 
 	n_frames = 1 + (audio.size - frame_len) // hop
 
 	# Use numpy stride_tricks for efficient sliding window - no Python loops
-	from numpy.lib.stride_tricks import as_strided
 	shape = (n_frames, frame_len)
 	strides = (audio.strides[0] * hop, audio.strides[0])
-	frames = as_strided(audio, shape=shape, strides=strides, writeable=False)
+	frames = numpy.lib.stride_tricks.as_strided(audio, shape=shape, strides=strides, writeable=False)
 
 	# Vectorized RMS computation across all frames at once
 	return numpy.sqrt(numpy.mean(frames * frames, axis=1)).astype(numpy.float32)
 
 
-def _noise_clip_from_percentile(
+def _noise_clip_from_percentile (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	frame_ms: float = 20.0,
@@ -47,7 +49,7 @@ def _noise_clip_from_percentile(
 	return numpy.concatenate(noise_frames)
 
 
-def apply_noisereduce(
+def apply_noisereduce (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	frame_ms: float = 20.0,
@@ -87,7 +89,7 @@ Apply noise reduction using the noisereduce library with a noise clip estimate.
 	return reduced.astype(numpy.float32, copy=False)
 
 
-def apply_spectral_subtraction(
+def apply_spectral_subtraction (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	oversub: float = 0.7,
