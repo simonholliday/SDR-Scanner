@@ -141,6 +141,7 @@ class RadioScanner:
 		self.channel_indices: dict[float, tuple[int, int]] = {}
 		self.noise_indices: list[tuple[int, int]] = []
 		self.dc_mask: numpy.typing.NDArray[numpy.bool_] | None = None
+		self.noise_mask: numpy.typing.NDArray[numpy.bool_] | None = None
 		self.channel_filter_sos: numpy.typing.NDArray[numpy.float64] | None = None
 
 		# Per-channel filter state for continuous processing (prevents clicks at block boundaries)
@@ -278,6 +279,14 @@ class RadioScanner:
 		dc_start = max(0, center_bin - sdr_scanner.constants.DC_SPIKE_BINS)
 		dc_end = min(self.fft_size, center_bin + sdr_scanner.constants.DC_SPIKE_BINS + 1)
 		self.dc_mask[dc_start:dc_end] = False
+		self.noise_mask = None
+		if self.noise_indices:
+			noise_mask = numpy.zeros(self.fft_size, dtype=bool)
+			for idx_start, idx_end in self.noise_indices:
+				noise_mask[idx_start:idx_end] = True
+			noise_mask &= self.dc_mask
+			if numpy.any(noise_mask):
+				self.noise_mask = noise_mask
 
 		# Pre-compute channel extraction filter (for recording)
 		if self.can_demod and self.recording_enabled:
@@ -609,7 +618,7 @@ class RadioScanner:
 			segment = samples[start:end]
 			yield segment * self.window
 
-	def _calculate_psd_data(self, samples: numpy.typing.NDArray[numpy.complex64]) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]]]:
+	def _calculate_psd_data(self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
 		"""
 		Calculate both averaged Welch PSD and per-segment PSDs.
 		Reuses FFT segments to save CPU cycles.
@@ -617,7 +626,7 @@ class RadioScanner:
 		Returns:
 			(psd_welch_db, segment_psds_db)
 		"""
-		segment_psds_db = []
+		segment_psds_db = [] if include_segment_psd else None
 		psd_accumulator = numpy.zeros(self.fft_size, dtype=numpy.float64)
 		n_segments = 0
 
@@ -628,9 +637,10 @@ class RadioScanner:
 			# For Welch averaging (linear scale)
 			psd_accumulator += mag_sq
 			
-			# For transition localization (dB scale)
-			psd_db = 10 * numpy.log10(mag_sq + 1e-12)
-			segment_psds_db.append(numpy.fft.fftshift(psd_db))
+			if include_segment_psd:
+				# For transition localization (dB scale)
+				psd_db = 10 * numpy.log10(mag_sq + 1e-12)
+				segment_psds_db.append(numpy.fft.fftshift(psd_db))
 			n_segments += 1
 
 		if n_segments == 0:
@@ -703,9 +713,7 @@ class RadioScanner:
 			state_str = "ON" if is_active else "OFF"
 			channel_mhz = channel_freq / 1e6
 
-			can_record_string = "YES" if self.can_record else "NO"
-
-			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB, recording: {can_record_string})")
+			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB, recording: {'YES' if self.can_record else 'NO'})")
 			print("".join("X" if self.channel_states[ch] else "-" for ch in self.channels))
 
 			if turning_on and self.can_record:
@@ -772,19 +780,12 @@ class RadioScanner:
 			Estimated noise floor in dB
 		"""
 
-		if not self.noise_indices:
+		if self.noise_mask is None:
 			# Fallback to percentile method if no gaps defined
 			return numpy.percentile(psd_db, 25)
 
-		# Collect all noise samples from gaps
-		noise_samples = []
-		for idx_start, idx_end in self.noise_indices:
-			# Apply DC mask to noise regions too
-			region = psd_db[idx_start:idx_end]
-			dc_region_mask = self.dc_mask[idx_start:idx_end]
-			noise_samples.extend(region[dc_region_mask])
-
-		if len(noise_samples) == 0:
+		noise_samples = psd_db[self.noise_mask]
+		if noise_samples.size == 0:
 			return numpy.percentile(psd_db, 25)
 
 		# Use median of noise samples - robust to outliers
@@ -887,7 +888,7 @@ class RadioScanner:
 				logger.warning(f"ADC SATURATION: {clipping_percentage:.1f}% samples clipping. Reduce gain.")
 
 			# Compute all PSD data once (Welch and segments)
-			psd_db, segment_psds = self._calculate_psd_data(samples)
+			psd_db, segment_psds = self._calculate_psd_data(samples, include_segment_psd=self.can_record)
 
 			# Estimate noise floor
 			noise_floor_db = self._estimate_noise_floor(psd_db)
