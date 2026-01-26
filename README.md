@@ -76,6 +76,7 @@ recording:
 - `audio_sample_rate`: output WAV rate (Hz).
 - `fade_in_ms`/`fade_out_ms`: fades applied at channel start/stop.
 - `soft_limit_drive`: post-processing soft limiter drive. Typical range 1.5-3.0 (higher = stronger limiting).
+- `noise_reduction_enabled`: toggle spectral subtraction noise reduction (default: true).
 
 Band Defaults
 ```
@@ -130,7 +131,7 @@ Resource and Performance Notes
 ------------------------------
 - **Sample rate dominates CPU**. Large bands at high sample rates increase FFT/PSD load.
 - **Overrun warnings** indicate the processing of a slice exceeded its real-time window. This can lead to dropped IQ blocks (`Sample queue full`).
-- **Noise reduction** runs during write/flush and currently always applies `apply_spectral_subtraction` in `sdr_scanner/recording.py`. The alternative `apply_noisereduce` implementation exists in `sdr_scanner/dsp/noise_reduction.py` but is commented out in code and would require a code change to enable; it is significantly more CPU-intensive.
+- **Noise reduction** runs during write/flush if enabled (default). It uses `apply_spectral_subtraction` which is efficient. The alternative `apply_noisereduce` implementation exists in `sdr_scanner/dsp/noise_reduction.py` for reference but is not used by default as it is significantly more CPU-intensive.
 - **Queue size** provides burst tolerance but uses RAM (each slice can be several MB).
 
 If you see repeated `Sample queue full` warnings, reduce the band's `sample_rate`, exclude channels, or increase `sample_queue_maxsize`.
