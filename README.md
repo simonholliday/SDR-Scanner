@@ -77,6 +77,7 @@ recording:
 - `fade_in_ms`/`fade_out_ms`: fades applied at channel start/stop.
 - `soft_limit_drive`: post-processing soft limiter drive. Typical range 1.5-3.0 (higher = stronger limiting).
 - `noise_reduction_enabled`: toggle spectral subtraction noise reduction (default: true).
+- `recording_hold_time_ms`: duration in ms to continue recording after signal drops below threshold (default: 500).
 
 Band Defaults
 ```

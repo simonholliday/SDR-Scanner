@@ -108,7 +108,7 @@ def apply_noisereduce (
 	freq_mask_smooth_hz: float = 300.0,
 	time_mask_smooth_ms: float = 100.0,
 	n_fft: int = 1024
-) -> numpy.ndarray:
+) -> tuple[numpy.ndarray, numpy.ndarray | None]:
 
 	"""
 	Apply noise reduction using the noisereduce library.
@@ -127,14 +127,14 @@ def apply_noisereduce (
 		n_fft: FFT size for spectral analysis
 
 	Returns:
-		Noise-reduced audio signal
+		Tuple of (noise_reduced_audio, None)
 	"""
 
 	# Skip processing for very short audio
 	if audio.size == 0:
-		return audio.astype(numpy.float32, copy=False)
+		return audio.astype(numpy.float32, copy=False), None
 	if audio.size < n_fft:
-		return audio.astype(numpy.float32, copy=False)
+		return audio.astype(numpy.float32, copy=False), None
 
 	# Check if noisereduce library is available (optional dependency)
 	try:
@@ -159,52 +159,50 @@ def apply_noisereduce (
 		time_mask_smooth_ms=time_mask_smooth_ms,
 		n_fft=n_fft
 	)
-	return reduced.astype(numpy.float32, copy=False)
+	return reduced.astype(numpy.float32, copy=False), None
 
 
 def apply_spectral_subtraction (
 	audio: numpy.ndarray,
 	sample_rate: int,
 	oversub: float = 0.7,
-	floor: float = 0.06
-) -> numpy.ndarray:
+	floor: float = 0.06,
+	noise_mag: numpy.ndarray | None = None
+) -> tuple[numpy.ndarray, numpy.ndarray]:
 
 	"""
 	Custom spectral subtraction implementation with gain smoothing.
 
 	Spectral subtraction works in the frequency domain:
 	1. Convert audio to spectrogram (STFT: Short-Time Fourier Transform)
-	2. Estimate noise spectrum from quiet frames
+	2. Estimate noise spectrum from quiet frames (or use provided noise_mag)
 	3. Subtract noise spectrum from signal spectrum
 	4. Apply smoothing to reduce "musical noise" artifacts
 	5. Convert back to time domain (ISTFT)
-
-	Musical noise: random burbling artifacts caused by random variations in
-	noise spectrum. Smoothing the gain mask across time/frequency reduces this.
 
 	Args:
 		audio: Input audio signal
 		sample_rate: Audio sample rate in Hz
 		oversub: Noise oversubtraction factor (>1 = more aggressive)
 		floor: Minimum gain floor to prevent complete zeroing
+		noise_mag: Pre-computed noise magnitude spectrum (optional)
 
 	Returns:
-		Noise-reduced audio signal
+		Tuple of (denoised_audio, noise_mag) where noise_mag can be reused
 	"""
 
 	if audio.size == 0:
-		return audio.astype(numpy.float32, copy=False)
+		return audio.astype(numpy.float32, copy=False), (noise_mag if noise_mag is not None else numpy.array([], dtype=numpy.float32))
 
 	# Choose frame length: ~20ms is typical for speech processing
 	# Round up to nearest power of 2 for efficient FFT
 	frame_len = max(256, int(sample_rate * 0.02))
 	n_fft = 1 << (frame_len - 1).bit_length()
+
 	if audio.size < n_fft:
-		return audio.astype(numpy.float32, copy=False)
+		return audio.astype(numpy.float32, copy=False), (noise_mag if noise_mag is not None else numpy.array([], dtype=numpy.float32))
 
 	# STFT: convert audio to time-frequency representation (spectrogram)
-	# Each column is one frame, each row is one frequency bin
-	# 50% overlap (hop = n_fft // 2) is standard
 	hop = n_fft // 2
 	_, _, zxx = scipy.signal.stft(
 		audio,
@@ -217,21 +215,22 @@ def apply_spectral_subtraction (
 	)
 
 	# Separate magnitude and phase
-	# Noise reduction only modifies magnitude (keeps phase intact)
 	magnitude = numpy.abs(zxx)
 	phase = zxx / numpy.maximum(magnitude, 1e-10)
 
-	# Estimate noise spectrum from quietest frames (similar to _noise_clip_from_percentile)
-	# Calculate total energy per frame (sum across all frequencies)
-	frame_energy = numpy.mean(magnitude * magnitude, axis=0)
-	energy_threshold = numpy.percentile(frame_energy, 20.0)
-	noise_frames = magnitude[:, frame_energy <= energy_threshold]
+	# Use provided noise profile or estimate from quietest frames in current block
+	if noise_mag is None or noise_mag.shape[0] != magnitude.shape[0]:
 
-	# Average the quiet frames to get noise spectrum estimate
-	if noise_frames.size == 0:
-		noise_mag = numpy.median(magnitude, axis=1, keepdims=True)
-	else:
-		noise_mag = numpy.mean(noise_frames, axis=1, keepdims=True)
+		# Calculate total energy per frame (sum across all frequencies)
+		frame_energy = numpy.mean(magnitude * magnitude, axis=0)
+		energy_threshold = numpy.percentile(frame_energy, 20.0)
+		noise_frames = magnitude[:, frame_energy <= energy_threshold]
+
+		# Average the quiet frames to get noise spectrum estimate
+		if noise_frames.size == 0:
+			noise_mag = numpy.median(magnitude, axis=1, keepdims=True)
+		else:
+			noise_mag = numpy.mean(noise_frames, axis=1, keepdims=True)
 
 	# Spectral subtraction: magnitude_clean = magnitude_signal - α*magnitude_noise
 	# oversub > 1.0 means we subtract more than the estimated noise (more aggressive)
@@ -242,8 +241,6 @@ def apply_spectral_subtraction (
 	gain = subtracted / numpy.maximum(magnitude, 1e-10)
 
 	# Smooth the gain mask to reduce musical noise (random variations)
-	# 2D convolution: smooth across 3 frequency bins and 5 time frames
-	# This makes the gain mask more coherent (less random chirping)
 	smooth_kernel = numpy.ones((3, 5), dtype=numpy.float32)
 	smooth_kernel /= smooth_kernel.sum()
 	gain = scipy.signal.convolve2d(gain, smooth_kernel, mode="same", boundary="symm")
@@ -253,7 +250,6 @@ def apply_spectral_subtraction (
 	zxx_denoised = magnitude * gain * phase
 
 	# ISTFT: convert spectrogram back to time-domain audio
-	# (Inverse Short-Time Fourier Transform)
 	_, denoised = scipy.signal.istft(
 		zxx_denoised,
 		fs=sample_rate,
@@ -265,4 +261,6 @@ def apply_spectral_subtraction (
 	)
 
 	# Trim to original length (STFT/ISTFT may add padding)
-	return denoised[: audio.size].astype(numpy.float32, copy=False)
+	audio_out = denoised[: audio.size].astype(numpy.float32, copy=False)
+
+	return audio_out, noise_mag

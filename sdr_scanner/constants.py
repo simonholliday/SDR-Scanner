@@ -22,6 +22,11 @@ NFM_DEEMPHASIS_TAU = 300e-6  # 300 microseconds
 # NFM typically uses ±5 kHz deviation (narrow compared to broadcast FM's ±75 kHz)
 NFM_DEVIATION_HZ = 2.5e3  # 2.5 kHz deviation
 
+# Oversampling factor for Intermediate Frequency (IF) decimation
+# A factor of 3 to 4 times the final audio rate ensures the FM discriminator 
+# has enough bandwidth to capture the full signal deviation and maintain linearity.
+NFM_IF_OVERSAMPLE = 4.0
+
 # ==============================================================================
 # AM (Amplitude Modulation) AGC Constants
 # ==============================================================================

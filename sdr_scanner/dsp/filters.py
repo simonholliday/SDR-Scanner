@@ -6,6 +6,7 @@ and other signal conditioning needed for clean audio output from demodulated RF.
 
 Key functions:
 - decimate_audio: Convert from RF sample rate to audio sample rate with anti-aliasing
+- decimate_iq: Convert complex iq samples to a lower sample rate (intermediate frequency)
 - apply_fade: Apply smooth fade-in/fade-out to prevent clicks at recording boundaries
 """
 
@@ -18,6 +19,149 @@ import scipy.signal
 logger = logging.getLogger(__name__)
 
 
+# Track which resampling ratios have already been warned about to avoid log spam
+_RESAMPLE_WARNED_RATIOS: set[tuple[int, int]] = set()
+
+
+def _decimate_common (
+	signal: numpy.typing.NDArray,
+	sample_rate: float,
+	target_rate: int,
+	state: dict,
+	state_prefix: str = 'decimate_'
+) -> tuple[numpy.typing.NDArray, dict]:
+
+	"""
+	Common implementation for signal decimation (audio or IQ).
+	Preserves input dtype (float or complex).
+
+	Args:
+		signal: Input signal
+		sample_rate: Input sample rate in Hz
+		target_rate: Target sample rate in Hz
+		state: State dict for continuity
+		state_prefix: Prefix for state keys to avoid collisions in chained usage
+
+	Returns:
+		Tuple of (decimated_signal, updated_state)
+	"""
+
+	sr = int(round(sample_rate))
+	ar = int(target_rate)
+	
+	if sr <= 0 or ar <= 0:
+		return signal, state
+
+	if sr == ar:
+		return signal, state
+
+	# Check if we can use simple integer decimation (much faster)
+	# If the ratio isn't an integer, we need rational resampling instead
+	decimation_factor = sr // ar
+
+	if sr % ar != 0:
+		# Warn once per process for each unique ratio to avoid log spam on every channel activation
+		ratio = (sr, ar)
+		if ratio not in _RESAMPLE_WARNED_RATIOS:
+			logger.warning(
+				f"Non-integer resample ratio: {sr} -> {ar} Hz. "
+				"Prefer a sample_rate that is an integer multiple of target rate for lower CPU."
+			)
+			_RESAMPLE_WARNED_RATIOS.add(ratio)
+
+		# Rational resampling: upsample by 'up', then downsample by 'down'
+		# Example: 2 MHz -> 48 kHz is not integer-divisible
+		# GCD(2000000, 48000) = 16000, so up=3, down=125
+		g = math.gcd(sr, ar)
+		up = ar // g
+		down = sr // g
+		
+		prev_key = f'{state_prefix}resample_prev'
+		ratio_key = f'{state_prefix}resample_ratio'
+		taps_key = f'{state_prefix}resample_taps_len'
+		
+		prev = state.get(prev_key, numpy.array([], dtype=signal.dtype))
+		last_ratio = state.get(ratio_key)
+		
+		if last_ratio != (up, down):
+			prev = numpy.array([], dtype=signal.dtype)
+			state[ratio_key] = (up, down)
+
+		current = signal
+		# Prepend previous block's tail to provide context for FIR filter
+		if prev.size > 0:
+			signal = numpy.concatenate([prev, current])
+			
+		# Perform rational resampling using polyphase filters
+		# resample_poly handles both float and complex correctly
+		resampled = scipy.signal.resample_poly(signal, up, down)
+		
+		# Ensure output matches input type (scipy allows float->float, complex->complex)
+		if signal.dtype == numpy.float32 or signal.dtype == numpy.float64:
+			resampled = resampled.astype(numpy.float32)
+		else:
+			resampled = resampled.astype(numpy.complex64)
+
+		if prev.size > 0:
+			# Drop output samples that came from the prepended overlap
+			out_prev = int(numpy.ceil(prev.size * up / down))
+			resampled = resampled[out_prev:]
+
+		# Save tail of current block for next iteration
+		taps_len = state.get(taps_key)
+		if taps_len is None:
+			# Polyphase FIR length is approximately 10 * max(up, down)
+			taps_len = 10 * max(up, down) + 1
+			state[taps_key] = taps_len
+			
+		overlap_len = min(current.size, int(taps_len))
+		state[prev_key] = current[-overlap_len:].copy()
+		return resampled, state
+
+	if decimation_factor <= 1:
+		return signal, state
+
+	# Anti-aliasing filter: remove frequencies above new Nyquist rate
+	sos_key = f'{state_prefix}sos'
+	zi_key = f'{state_prefix}zi'
+	phase_key = f'{state_prefix}phase'
+
+	if sos_key not in state:
+		nyq_freq = target_rate / 2
+		cutoff = nyq_freq * 0.8  # 80% of Nyquist leaves transition band
+		state[sos_key] = scipy.signal.butter(8, cutoff, fs=sample_rate, output='sos')
+
+	if zi_key not in state:
+		#ZI needs to match input dtype (complex if signal is complex)
+		# However, scipy logic creates zeros of whatever type, but let's be explicit
+		zi_shape = (state[sos_key].shape[0], 2)
+		state[zi_key] = numpy.zeros(zi_shape, dtype=signal.dtype)
+
+	if phase_key not in state:
+		state[phase_key] = 0
+
+	# Apply anti-aliasing filter with state preservation
+	filtered, state[zi_key] = scipy.signal.sosfilt(
+		state[sos_key], signal, zi=state[zi_key]
+	)
+
+	# Downsample by keeping every Nth sample
+	start_idx = state[phase_key]
+	decimated = filtered[start_idx::decimation_factor]
+
+	if signal.dtype == numpy.complex64 or signal.dtype == numpy.complex128:
+		# Use copy=False to avoid extra alloc if possible, ensure complex64
+		decimated = decimated.astype(numpy.complex64, copy=False)
+	else:
+		decimated = decimated.astype(numpy.float32, copy=False)
+
+	# Calculate where to start next block to maintain phase continuity
+	remaining = (len(filtered) - start_idx) % decimation_factor
+	state[phase_key] = (decimation_factor - remaining) % decimation_factor
+
+	return decimated, state
+
+
 def decimate_audio (
 	signal: numpy.typing.NDArray,
 	sample_rate: float,
@@ -26,116 +170,34 @@ def decimate_audio (
 ) -> tuple[numpy.typing.NDArray[numpy.float32], dict]:
 
 	"""
-	Decimate signal from sample_rate to audio_sample_rate with state preservation.
+	Decimate signal to audio rate (float32).
+	Wrapper around _decimate_common.
+	"""
+	
+	# Use default 'decimate_' prefix for backward compatibility with existing state
+	out, state = _decimate_common(signal, sample_rate, audio_sample_rate, state, state_prefix='decimate_')
+	
+	# Ensure float output (magnitude if complex, but usually audio is real)
+	if numpy.iscomplexobj(out):
+		out = numpy.abs(out)
+		
+	return out.astype(numpy.float32), state
 
-	Decimation reduces the sample rate by an integer factor (e.g., 2 MHz -> 48 kHz).
-	This requires anti-aliasing filtering before downsampling to prevent aliasing
-	(high frequencies folding back into the audible range).
 
-	When the ratio is not an integer, uses rational resampling (upsample then downsample)
-	which is more expensive but handles arbitrary rate conversions.
+def decimate_iq (
+	signal: numpy.typing.NDArray[numpy.complex64],
+	sample_rate: float,
+	target_rate: int,
+	state: dict,
+	state_prefix: str = 'iq_decimate_'
+) -> tuple[numpy.typing.NDArray[numpy.complex64], dict]:
 
-	Args:
-		signal: Input signal to decimate
-		sample_rate: Input sample rate in Hz
-		audio_sample_rate: Target sample rate in Hz
-		state: State dict for filter continuity
-
-	Returns:
-		Tuple of (decimated_samples, updated_state)
+	"""
+	Decimate IQ signal (complex64).
+	Wrapper around _decimate_common.
 	"""
 
-	sr = int(round(sample_rate))
-	ar = int(audio_sample_rate)
-	if sr <= 0 or ar <= 0:
-		return signal.astype(numpy.float32), state
-
-	if sr == ar:
-		return signal.astype(numpy.float32), state
-
-	# Check if we can use simple integer decimation (much faster)
-	# If the ratio isn't an integer, we need rational resampling instead
-	decimation_factor = sr // ar
-
-	if sr % ar != 0:
-		# Warn once: non-integer ratios are much more CPU-intensive
-		if not state.get('resample_warned'):
-			logger.warning(
-				f"Non-integer resample ratio: {sr} -> {ar} Hz. "
-				"Prefer a sample_rate that is an integer multiple of audio_sample_rate for lower CPU."
-			)
-			state['resample_warned'] = True
-
-		# Rational resampling: upsample by 'up', then downsample by 'down'
-		# Example: 2 MHz -> 48 kHz is not integer-divisible
-		# GCD(2000000, 48000) = 16000, so up=3, down=125
-		# This means upsample by 3, then downsample by 125
-		# Keep overlap from previous block to avoid boundary artifacts from FIR filter
-		g = math.gcd(sr, ar)
-		up = ar // g
-		down = sr // g
-		prev = state.get('resample_prev', numpy.array([], dtype=signal.dtype))
-		last_ratio = state.get('resample_ratio')
-		if last_ratio != (up, down):
-			prev = numpy.array([], dtype=signal.dtype)
-			state['resample_ratio'] = (up, down)
-
-		current = signal
-		# Prepend previous block's tail to provide context for FIR filter
-		if prev.size > 0:
-			signal = numpy.concatenate([prev, current])
-		# Perform rational resampling using polyphase filters
-		resampled = scipy.signal.resample_poly(signal, up, down).astype(numpy.float32)
-		if prev.size > 0:
-			# Drop output samples that came from the prepended overlap
-			# We only want output corresponding to the current block
-			out_prev = int(numpy.ceil(prev.size * up / down))
-			resampled = resampled[out_prev:]
-
-		# Save tail of current block for next iteration
-		# Tail length must cover the FIR filter length to avoid clicks at boundaries
-		taps_len = state.get('resample_taps_len')
-		if taps_len is None:
-			# Polyphase FIR length is approximately 10 * max(up, down)
-			taps_len = 10 * max(up, down) + 1
-			state['resample_taps_len'] = taps_len
-		overlap_len = min(current.size, int(taps_len))
-		state['resample_prev'] = current[-overlap_len:].copy()
-		return resampled, state
-
-	if decimation_factor <= 1:
-		return signal.astype(numpy.float32), state
-
-	# Anti-aliasing filter: remove frequencies above new Nyquist rate
-	# Without this, high frequencies would "fold back" into audible range (aliasing)
-	# Use 8th-order Butterworth for sharp cutoff with minimal passband ripple
-	if 'decimate_sos' not in state:
-		nyq_freq = audio_sample_rate / 2
-		cutoff = nyq_freq * 0.8  # 80% of Nyquist leaves transition band
-		state['decimate_sos'] = scipy.signal.butter(8, cutoff, fs=sample_rate, output='sos')
-
-	if 'decimate_zi' not in state:
-		state['decimate_zi'] = scipy.signal.sosfilt_zi(state['decimate_sos']) * 0.0
-
-	if 'decimate_phase' not in state:
-		state['decimate_phase'] = 0
-
-	# Apply anti-aliasing filter with state preservation for continuous operation
-	filtered, state['decimate_zi'] = scipy.signal.sosfilt(
-		state['decimate_sos'], signal, zi=state['decimate_zi']
-	)
-
-	# Downsample by keeping every Nth sample
-	# Track phase across blocks: if we start at sample 2, next block starts at (2+len)%N
-	# This ensures no samples are dropped or duplicated at block boundaries
-	start_idx = state['decimate_phase']
-	audio_samples = filtered[start_idx::decimation_factor].astype(numpy.float32)
-
-	# Calculate where to start next block to maintain phase continuity
-	remaining = (len(filtered) - start_idx) % decimation_factor
-	state['decimate_phase'] = (decimation_factor - remaining) % decimation_factor
-
-	return audio_samples, state
+	return _decimate_common(signal, sample_rate, target_rate, state, state_prefix=state_prefix)
 
 
 def apply_fade (

@@ -206,6 +206,7 @@ class ChannelRecorder:
 
 		# Flag to indicate if recorder is closing
 		self.closing = False
+		self.noise_mag: numpy.ndarray | None = None
 
 		self._write_lock = threading.Lock()
 		self._buffer_lock = threading.Lock()
@@ -342,8 +343,8 @@ class ChannelRecorder:
 					# For now, we still let it estimate locally but it's a candidate for improvement.
 					pass
 
-				samples = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
-					samples, self.audio_sample_rate, oversub=0.7, floor=0.06
+				samples, self.noise_mag = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
+					samples, self.audio_sample_rate, oversub=0.7, floor=0.06, noise_mag=self.noise_mag
 				)
 			except Exception as exc:
 				logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")

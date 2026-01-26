@@ -91,6 +91,7 @@ class RadioScanner:
 		self.fade_in_ms = self.recording_config.fade_in_ms
 		self.fade_out_ms = self.recording_config.fade_out_ms
 		self.soft_limit_drive = self.recording_config.soft_limit_drive
+		self.hold_time_seconds = self.recording_config.recording_hold_time_ms / 1000.0
 
 		self.can_demod = self.modulation in sdr_scanner.dsp.demodulation.DEMODULATORS
 
@@ -122,6 +123,10 @@ class RadioScanner:
 			if idx not in excluded_indices
 		}
 		self.num_channels = len(self.channels)
+
+		# Track last time signal was above detection threshold for each channel
+		# Used for "Hold Time" (hang time) logic to prevent early truncation
+		self.channel_last_active_time: dict[float, float] = {ch_freq: 0.0 for ch_freq in self.channels}
 
 		# Calculate edge margin - add padding on each side to avoid filter rolloff
 		# Filters attenuate signals near the edge of the passband, so we need extra space
@@ -1049,13 +1054,21 @@ class RadioScanner:
 			segment_noise_floors = None
 
 			# Phase 6: handle transitions, demodulation, and recording.
+			now = time.time()
 			for i, channel_freq in enumerate(self.channels):
 				idx = self.channel_original_indices.get(channel_freq, -1)
 				snr_db = channel_powers[i] - noise_floor_db
 				current_state = self.channel_states[channel_freq]
 				
 				threshold = self.snr_threshold_off_db if current_state else self.snr_threshold_db
-				is_active = snr_db > threshold
+				above_threshold = snr_db > threshold
+
+				# Update last active time if signal is strong
+				if above_threshold:
+					self.channel_last_active_time[channel_freq] = now
+				
+				# Channel is "active" if signal is strong OR we are within the hold time window
+				is_active = above_threshold or (now - self.channel_last_active_time.get(channel_freq, 0) < self.hold_time_seconds)
 
 				# Compute segment PSDs lazily only when a transition is detected
 				# This avoids expensive per-segment FFT when channels are stable
