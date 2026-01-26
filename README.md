@@ -10,7 +10,7 @@ Key Features
 - Band scanning with SNR-based activity detection.
 - AM and NFM demodulation with stateful DSP.
 - Per-channel recording to WAV/BWF.
-- Built-in spectral subtraction noise reduction (configurable toggle) and soft limiting.
+- Built-in spectral subtraction noise reduction (always on; no config toggle) and soft limiting.
 - Multi-device parallel scanning.
 - Per-band exclusions (skip unwanted channel indices).
 
