@@ -15,12 +15,28 @@ failures.
 
 from __future__ import annotations
 
+import fractions
 import typing
-
 import pydantic
 import yaml
 
 import sdr_scanner.constants
+
+
+def _fraction_constructor (loader: yaml.SafeLoader, node: yaml.nodes.ScalarNode) -> fractions.Fraction:
+	"""
+	YAML constructor for the !fraction tag.
+
+	Converts a string like "25000/3" into a fractions.Fraction object.
+	This allows representing precise radio frequencies that cannot be
+	perfectly represented as floating-point numbers.
+	"""
+	value = loader.construct_scalar(node)
+	return fractions.Fraction(value)
+
+
+# Register the !fraction tag with the YAML loader.
+yaml.SafeLoader.add_constructor('!fraction', _fraction_constructor)
 
 
 def _normalize_label (value: typing.Any) -> typing.Any:
@@ -159,6 +175,7 @@ class RecordingConfig(pydantic.BaseModel):
 	fade_in_ms: float | None = pydantic.Field(default=None, ge=0.0)
 	fade_out_ms: float | None = pydantic.Field(default=None, ge=0.0)
 	soft_limit_drive: float = pydantic.Field(default=2.0, gt=0.0)
+	noise_reduction_enabled: bool = pydantic.Field(default=True)
 
 
 class BandTypeConfig(pydantic.BaseModel):

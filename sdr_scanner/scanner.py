@@ -339,9 +339,15 @@ class RadioScanner:
 
 		# Pre-compute angular frequencies for frequency shifting.
 		self.channel_omega = {}
+		self.channel_phase_array = None # Shared if all channels have same slice size
+
 		for channel_freq in self.channels:
 			freq_offset = channel_freq - self.center_freq
+			# Omega is the phase increment per sample in radians.
 			self.channel_omega[channel_freq] = -2j * numpy.pi * freq_offset / self.sample_rate
+
+		# Pre-compute a static phase array (0, 1, 2, ... N-1) to avoid re-allocating it in the hot path.
+		self.phase_index_array = numpy.arange(self.samples_per_slice, dtype=numpy.float64)
 
 		logger.info(f"FFT size: {self.fft_size} bins, frequency resolution: {freq_resolution:.1f} Hz")
 		logger.info(f"Welch segments: {sdr_scanner.constants.WELCH_SEGMENTS}, samples per slice: {self.samples_per_slice}")
@@ -854,10 +860,12 @@ class RadioScanner:
 		valid = counts > 0
 		if numpy.any(valid):
 			# Prefix sums avoid a Python loop per channel in the hot path.
+			# We use a 1-indexed cumulative sum array to simplify the logic.
 			csum = numpy.concatenate(([0.0], numpy.cumsum(psd_db)))
 			sums = csum[self.channel_bin_ends[valid]] - csum[self.channel_bin_starts[valid]]
 			powers[valid] = sums / counts[valid]
 
+		# Handle DC spike masks for overlapping channels
 		for idx, mask in enumerate(self.channel_dc_masks):
 			if mask is None:
 				continue
@@ -890,7 +898,14 @@ class RadioScanner:
 		# Compute oscillator with continuous phase based on cumulative sample count.
 		start_sample = self.sample_counter + sample_offset
 		start_phase = omega * start_sample
-		samples_shifted = samples * numpy.exp(start_phase + omega * numpy.arange(n_samples, dtype=numpy.float64))
+
+		# Optimization: use pre-computed phase array if chunk size matches.
+		if n_samples == self.samples_per_slice and sample_offset == 0:
+			phase_arr = self.phase_index_array
+		else:
+			phase_arr = numpy.arange(n_samples, dtype=numpy.float64)
+
+		samples_shifted = samples * numpy.exp(start_phase + omega * phase_arr)
 
 		# Initialize filter state if needed
 		if channel_freq not in self.channel_filter_zi:
@@ -922,6 +937,10 @@ class RadioScanner:
 
 		filename_suffix = f"{snr_db:.1f}" + "dB_" + self.device_type + "_" + str(self.device_index)
 
+		# Find the initial noise floor to provide a stable reference for noise reduction
+		# This is better than let the recorder guess from short audio chunks.
+		initial_noise_floor = getattr(self, '_last_noise_floor_db', None)
+
 		channel_recorder = sdr_scanner.recording.ChannelRecorder(
 			channel_freq=channel_freq,
 			channel_index=channel_index,
@@ -932,8 +951,13 @@ class RadioScanner:
 			audio_output_dir=self.audio_output_dir,
 			modulation=self.modulation,
 			filename_suffix=filename_suffix,
-			soft_limit_drive=self.soft_limit_drive
+			soft_limit_drive=self.soft_limit_drive,
+			noise_reduction_enabled=self.recording_config.noise_reduction_enabled
 		)
+
+		# Pass the band-wide noise floor if we have it
+		if initial_noise_floor is not None:
+			channel_recorder.initial_noise_floor_db = initial_noise_floor
 
 		# Start the async flush task using the provided event loop
 		channel_recorder.flush_task = asyncio.run_coroutine_threadsafe(
@@ -988,6 +1012,11 @@ class RadioScanner:
 			if clipping_percentage > 0.1:
 				logger.warning(f"ADC SATURATION: {clipping_percentage:.1f}% samples clipping. Reduce gain.")
 
+			# Phase 1.5: Remove DC offset (center spike) from SDR.
+			# Using a simple mean subtraction is common and effective for 8-bit SDRs.
+			# This is done on the whole slice before any frequency shifting.
+			samples = samples - numpy.mean(samples)
+
 			# Phase 2: compute PSD (Welch) for detection.
 			# Welch PSD is the primary CPU cost; segment PSDs computed lazily only when needed.
 			# This saves 30-40% of FFT overhead when no channels are transitioning.
@@ -995,6 +1024,7 @@ class RadioScanner:
 
 			# Phase 3: estimate noise floor from gaps, not the whole band.
 			noise_floor_db = self._estimate_noise_floor(psd_db)
+			self._last_noise_floor_db = noise_floor_db
 
 			# Phase 4: bulk energy check avoids per-channel work when quiet.
 			# We use a threshold that's strictly lower than the lowest possible detection threshold.

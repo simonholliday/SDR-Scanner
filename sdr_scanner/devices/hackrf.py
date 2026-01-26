@@ -315,16 +315,20 @@ class HackRfDevice(sdr_scanner.devices.base.BaseDevice):
 		raw = numpy.frombuffer(data, dtype=numpy.int8) if not isinstance(data, numpy.ndarray) else data
 
 		# Samples must come in I/Q pairs (even number of bytes)
-		# Drop trailing byte if odd length (shouldn't happen but be defensive)
-		if raw.size % 2 != 0:
-			raw = raw[:-1]
+		n_complex = raw.size // 2
+		if n_complex == 0:
+			return numpy.array([], dtype=numpy.complex64)
 
-		# Reshape from [I0, Q0, I1, Q1, ...] to [[I0, Q0], [I1, Q1], ...]
-		iq = raw.astype(numpy.float32).reshape(-1, 2)
+		# Pre-allocate complex array
+		complex_samples = numpy.empty(n_complex, dtype=numpy.complex64)
 
-		# Normalize from [-128, 127] to approximately [-1, 1] and create complex samples
-		# Formula: (I / 128) + j*(Q / 128)
-		return ((iq[:, 0] / 128.0) + 1j * (iq[:, 1] / 128.0)).astype(numpy.complex64)
+		# Extract I and Q components directly to the complex array.
+		# Normalize from [-128, 127] to approximately [-1, 1].
+		# This avoids large temporary float32 arrays and reshapes.
+		complex_samples.real = raw[0:n_complex*2:2].astype(numpy.float32) / 128.0
+		complex_samples.imag = raw[1:n_complex*2:2].astype(numpy.float32) / 128.0
+
+		return complex_samples
 
 	def _buffer_samples (self, samples: numpy.typing.NDArray[numpy.complex64], chunk_size: int, callback: typing.Callable) -> None:
 		"""

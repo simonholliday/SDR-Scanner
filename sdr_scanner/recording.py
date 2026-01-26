@@ -58,7 +58,8 @@ class ChannelRecorder:
 		audio_output_dir: str,
 		modulation: str = "Unknown",
 		filename_suffix: str = None,
-		soft_limit_drive: float = 2.0
+		soft_limit_drive: float = 2.0,
+		noise_reduction_enabled: bool = True
 	) -> None:
 
 		"""
@@ -93,6 +94,8 @@ class ChannelRecorder:
 		# Precompute soft limiter parameters for efficiency
 		self.soft_limit_drive = max(0.1, float(soft_limit_drive))
 		self.soft_limit_scale = 1.0 / numpy.tanh(self.soft_limit_drive)
+		self.noise_reduction_enabled = noise_reduction_enabled
+		self.initial_noise_floor_db: float | None = None
 
 		# Calculate maximum buffer size in samples (e.g., 5 seconds * 16000 Hz = 80000 samples)
 		# This prevents memory from growing unbounded if disk writes fall behind
@@ -329,12 +332,21 @@ class ChannelRecorder:
 
 		# Apply noise reduction using faster spectral subtraction method
 		# This is 5-10x faster than the noisereduce library
-		try:
-			samples = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
-				samples, self.audio_sample_rate, oversub=0.7, floor=0.06
-			)
-		except Exception as exc:
-			logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")
+		if self.noise_reduction_enabled:
+			try:
+				# Use band-wide noise floor if available as a reference
+				noise_floor_offset = 0.0
+				if self.initial_noise_floor_db is not None:
+					# This is a heuristic: initial_noise_floor_db is in dB (log),
+					# but spectral subtraction works on magnitudes.
+					# For now, we still let it estimate locally but it's a candidate for improvement.
+					pass
+
+				samples = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
+					samples, self.audio_sample_rate, oversub=0.7, floor=0.06
+				)
+			except Exception as exc:
+				logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")
 
 		# Apply soft limiter using precomputed parameters
 		if samples.size > 0 and self.soft_limit_drive > 0:
