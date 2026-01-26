@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import numpy
+import numpy.lib.stride_tricks
 import numpy.typing
+import scipy.fft
 import scipy.signal
 import time
 import typing
@@ -662,39 +664,40 @@ class RadioScanner:
 	def _calculate_psd_data (self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
 		"""
 		Calculate both averaged Welch PSD and per-segment PSDs.
-		Reuses FFT segments to save CPU cycles.
+		Uses vectorized batched FFT for performance.
 
 		Returns:
 			(psd_welch_db, segment_psds_db)
 		"""
-		# FFT/Welch dominates CPU; we reuse the same segments for detection and transitions.
+
 		segment_size = self.fft_size
 		hop_size = segment_size // 2
 		n_segments = (len(samples) - segment_size) // hop_size + 1
 		if n_segments <= 0:
 			raise ValueError("Not enough samples for PSD calculation")
 
-		segment_psds_db = [None] * n_segments if include_segment_psd else None
-		psd_accumulator = numpy.zeros(self.fft_size, dtype=numpy.float64)
+		# Create overlapping segment views without copying data.
+		samples_contig = numpy.ascontiguousarray(samples)
+		segment_shape = (n_segments, segment_size)
+		segment_strides = (samples_contig.strides[0] * hop_size, samples_contig.strides[0])
+		segments = numpy.lib.stride_tricks.as_strided(samples_contig, shape=segment_shape, strides=segment_strides)
 
-		for i in range(n_segments):
-			start = i * hop_size
-			end = start + segment_size
-			windowed = samples[start:end] * self.window
-			fft_result = numpy.fft.fft(windowed)
-			mag_sq = numpy.abs(fft_result) ** 2
+		# Apply window and run a batched FFT across segments.
+		windowed = segments * self.window
+		fft_results = scipy.fft.fft(windowed, axis=1)
 
-			# For Welch averaging (linear scale)
-			psd_accumulator += mag_sq
+		# Magnitude squared: faster than abs() ** 2 for complex arrays.
+		mag_sq = fft_results.real ** 2 + fft_results.imag ** 2
 
-			if include_segment_psd:
-				# For transition localization (dB scale)
-				psd_db = 10 * numpy.log10(mag_sq + 1e-12)
-				segment_psds_db[i] = numpy.fft.fftshift(psd_db)
+		# Average and convert to dB for Welch.
+		psd_avg = numpy.mean(mag_sq, axis=0)
+		psd_welch_db = numpy.fft.fftshift(10.0 * numpy.log10(psd_avg + 1e-12))
 
-		# Average and convert to dB for Welch
-		psd_avg = psd_accumulator / n_segments
-		psd_welch_db = numpy.fft.fftshift(10 * numpy.log10(psd_avg + 1e-12))
+		segment_psds_db = None
+
+		if include_segment_psd:
+			segment_psds_db_arr = 10.0 * numpy.log10(mag_sq + 1e-12)
+			segment_psds_db = [numpy.fft.fftshift(segment_psds_db_arr[i]) for i in range(n_segments)]
 
 		return psd_welch_db, segment_psds_db
 
