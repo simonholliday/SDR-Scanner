@@ -3,7 +3,12 @@ SDR Scanner
 
 Overview
 --------
-SDR Scanner is an automated tool for monitoring and recording radio signals using Software Defined Radio (SDR) hardware. By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan wide ranges of the radio spectrum—such as Airband or Maritime frequencies—and automatically record transmissions as they occur. The software handles the technical signal processing in the background, allowing you to capture radio traffic across various frequencies without the need for manual tuning.
+SDR Scanner is a high-performance tool for monitoring and recording radio activity using Software Defined Radio (SDR) hardware. It is designed to be used in two ways:
+
+1.  **As a Command-Line Tool**: Quickly scan and record bands using simple terminal commands.
+2.  **As a Python Module**: Integrate radio scanning, detection, and callbacks directly into your own Python applications.
+
+By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan wide ranges of the radio spectrum—such as Airband or Maritime frequencies—and automatically record transmissions as they occur. The software handles the technical signal processing and hardware management in the background, allowing for efficient 24/7 monitoring even on modest hardware like a Raspberry Pi.
 
 Hardware Requirements
 ---------------------
@@ -51,6 +56,39 @@ Command Line
 sdr-scanner --band <band> [--config <path>] [--device-type rtlsdr|hackrf] [--device-index N]
 sdr-scanner --list-bands
 ```
+
+Python Module Usage
+-------------------
+You can also use the scanner as a library in your own code. This allows you to respond to radio events programmatically.
+
+```python
+import asyncio
+import sdr_scanner.config
+import sdr_scanner.scanner
+
+async def main():
+    # Load settings
+    config = sdr_scanner.config.load_config("config.yaml")
+
+    # Initialize scanner
+    scanner = sdr_scanner.scanner.RadioScanner(
+        config=config,
+        band_name="pmr",
+        device_type="rtlsdr"
+    )
+
+    # Optional: Add a callback for when a channel turns ON/OFF
+    scanner.add_state_callback(lambda band, ch, active, snr: 
+                               print(f"Channel {ch} is {'ON' if active else 'OFF'}"))
+
+    # Start scanning
+    await scanner.scan()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+See [examples/scan_demo.py](examples/scan_demo.py) for a more detailed implementation.
 
 Options:
 - `--config`, `-c`: path to config file (default `config.yaml`).
