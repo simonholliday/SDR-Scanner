@@ -216,4 +216,10 @@ Limitations
 
 License
 -------
-See project license or repository metadata.
+This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license.
+
+- **Non-Commercial**: You may use, adapt, and build upon this work for any non-commercial purpose.
+- **Attribution**: You must give appropriate credit to the original author (Simon Holliday).
+- **Commercial Use**: For commercial licensing inquiries, please contact the author.
+
+See the [LICENSE](LICENSE) file for the full legal text.
