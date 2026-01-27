@@ -1,0 +1,139 @@
+scanner:
+
+    # Number of samples to request from SDR device at a time
+    sdr_device_sample_size: 131072
+
+    # Time in milliseconds that we will sample a band before processing the data
+    # Should be a multiple of band_sample_size (we will check this in the code)
+    band_time_slice_ms: 200
+
+    # Async sample queue depth (buffer for temporary processing slowdowns)
+    # Each entry is ~2 MB (sdr_device_sample_size * 8 bytes), so 200 = ~400 MB max
+    # Higher values tolerate bursts when multiple channels activate simultaneously
+    # Recommended: 100-200 for normal use, 50-100 for memory-constrained systems
+    sample_queue_maxsize: 200
+
+    # Frequency calibration using a known strong signal (e.g., WFM broadcast)
+    # Set to null to disable calibration
+    # Example: 93.7e+6 for a strong FM radio station at 93.7 MHz
+    calibration_frequency_hz: 93.7e+6
+
+recording:
+
+    # Maximum in-memory buffer per channel (seconds)
+    buffer_size_seconds: 30
+
+    # How often to flush buffer to disk (seconds)
+    disk_flush_interval_seconds: 5
+
+    # Audio output sample rate (Hz) - 16kHz mono WAV
+    audio_sample_rate: 16000
+
+    # Output directory for recordings
+    audio_output_dir: "./audio"
+
+    # Linear fade in/out durations in milliseconds
+    fade_in_ms: 50
+    fade_out_ms: 150
+
+    # Soft limiter drive for post-processing; 1.5–3.0 is typical (higher = stronger limiting)
+    soft_limit_drive: 1.25
+
+band_defaults:
+
+    # Default settings for PMR bands
+
+    PMR:
+        channel_spacing: 12.5e+3
+        modulation: NFM
+        recording_enabled: true
+        snr_threshold_db: 4.5
+        sdr_gain_db: 36
+
+    # Default settings for airband voice (AM)
+
+    AIR:
+        channel_spacing: !fraction 25000/3
+        modulation: AM
+        recording_enabled: true
+        snr_threshold_db: 4.5
+        sdr_gain_db: 30
+
+bands:
+
+    # Practical maximum sample rates:
+    # - RTL-SDR Blog V4: 2.4MHz
+    # - HackRF One: 16MHz
+
+    pmr:
+        type: PMR
+        freq_start: 446.00625e+6
+        freq_end: 446.19375e+6
+        sample_rate: 1.024e6
+        exclude_channel_indices: [0, 1, 2]
+
+    # Air
+
+    air_civil_1:
+        type: AIR
+        freq_start: 118.0e+6
+        freq_end: 127.5e+6
+        sample_rate: 12.5e+6
+
+    air_civil_2:
+        type: AIR
+        freq_start: 127.5e+6
+        freq_end: 137.0e+6
+        sample_rate: 12.5e+6
+
+    # Specific Bristol/Local Area (Faster scanning)
+
+    air_civil_bristol:
+        type: AIR
+        freq_start: 125.5e+6
+        freq_end: 126.0e+6
+        sample_rate: 1.024e6
+        exclude_channel_indices: [25, 26, 33, 34]
+
+    # UK Military Airband
+    air_military_uhf:
+        type: AIR
+        freq_start: 225.0e+6
+        freq_end: 400.0e+6
+        channel_spacing: 25.0e+3
+        sample_rate: 2.4e+6
+        sdr_gain_db: 36
+
+    # ACARS Digital Data (Standard)
+    air_acars_primary:
+        type: DATA
+        freq_start: 131.5e+6
+        freq_end: 131.9e+6
+        channel_spacing: 25.0e+3
+        sample_rate: 1.0e+6
+        modulation: AM
+        snr_threshold_db: 15
+        sdr_gain_db: 36
+
+    # VDL Mode 2 (High-speed Digital Aviation Data)
+    air_vdl_m2:
+        type: DATA
+        freq_start: 136.9e+6
+        freq_end: 136.975e+6
+        channel_spacing: 25.0e+3
+        sample_rate: 1.0e+6
+        modulation: AM
+        snr_threshold_db: 15
+        sdr_gain_db: 36
+
+    # Fire Ground Simplex (Analog - used at scene of incidents)
+
+    fire_ground_uhf:
+        type: NFM
+        freq_start: 457.0e+6
+        freq_end: 457.5e+6
+        channel_spacing: 12.5e+3
+        sample_rate: 1.0e+6
+        modulation: NFM
+        snr_threshold_db: 15
+        sdr_gain_db: 24
