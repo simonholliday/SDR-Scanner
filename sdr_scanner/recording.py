@@ -136,8 +136,17 @@ class ChannelRecorder:
 		self.filepath = os.path.join(audio_output_dir, date_str, band_name, filename)
 
 		# Create the directory structure if it doesn't exist
-		# exist_ok=True prevents errors if directory already exists (thread-safe)
-		os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+		# Note: We use a robust check here because network filesystems (CIFS/SMB)
+		# can have metadata lag that causes os.makedirs(exist_ok=True) to fail
+		# if another process/thread created the directory at the exact same time.
+		dir_path = os.path.dirname(self.filepath)
+		if not os.path.exists(dir_path):
+			try:
+				os.makedirs(dir_path, exist_ok=True)
+			except FileExistsError:
+				# On some network filesystems, mkdir can fail with EEXIST even
+				# if stat() hasn't updated its cache yet. We ignore this safely.
+				pass
 
 		# Open WAV file for writing using soundfile library
 		# soundfile is chosen because it supports Broadcast WAV extensions

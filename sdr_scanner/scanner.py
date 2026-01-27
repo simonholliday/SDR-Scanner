@@ -143,6 +143,9 @@ class RadioScanner:
 		# Channel recorders: one per active channel
 		self.channel_recorders: dict[float, sdr_scanner.recording.ChannelRecorder] = {}
 
+		# Callbacks for channel state changes (ON/OFF)
+		self.state_callbacks: list[typing.Callable] = []
+
 		# SDR device
 		self.sdr: typing.Any | None = None
 
@@ -223,6 +226,16 @@ class RadioScanner:
 			freq += self.channel_spacing
 
 		return channels
+
+	def add_state_callback (self, callback: typing.Callable) -> None:
+		"""
+		Add a callback function to be called when a channel changes state.
+
+		The callback should accept (band_name: str, channel_index: int, is_active: bool, snr_db: float).
+		Synchronous and asynchronous callbacks are both supported and will be
+		executed on the main event loop.
+		"""
+		self.state_callbacks.append(callback)
 
 	def _precompute_fft_params (self) -> None:
 
@@ -797,6 +810,13 @@ class RadioScanner:
 					del self.channel_demod_state[channel_freq]
 
 				self._start_channel_recording(channel_freq, channel_index, snr_db, loop)
+
+			# Trigger state change callbacks on the main event loop
+			for callback in self.state_callbacks:
+				if asyncio.iscoroutinefunction(callback):
+					asyncio.run_coroutine_threadsafe(callback(self.band_name, channel_index, is_active, snr_db), loop)
+				else:
+					loop.call_soon_threadsafe(callback, self.band_name, channel_index, is_active, snr_db)
 
 		return trim_start, trim_end, sample_offset, turning_on, turning_off
 
