@@ -245,6 +245,15 @@ class RadioScanner:
 		# FFT size per segment for Welch averaging (smaller segments reduce variance).
 		self.fft_size = self.samples_per_slice // sdr_scanner.constants.WELCH_SEGMENTS
 
+		# Warn if FFT size is not a power of two, which can impact performance.
+		if (self.fft_size & (self.fft_size - 1) != 0) or self.fft_size == 0:
+			logger.warning(
+				f"FFT size ({self.fft_size}) is not a power of two. "
+				"This may lead to slightly slower processing on some CPU architectures. "
+				"To optimize, adjust band_time_slice_ms or sample_rate so that "
+				"(sample_rate * time_slice_ms / 8000) is a power of two."
+			)
+
 		# Window function reduces spectral leakage in the FFT bins.
 		self.window = scipy.signal.get_window('hann', self.fft_size).astype(numpy.float64)
 

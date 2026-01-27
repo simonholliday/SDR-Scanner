@@ -3,16 +3,21 @@ SDR Scanner
 
 Overview
 --------
-SDR Scanner scans configured RF bands, detects active channels by SNR, demodulates audio (AM/NFM), and records mono WAV files with Broadcast WAV metadata. It is designed for continuous monitoring on modest hardware (e.g., Raspberry Pi), and supports multiple devices in parallel (RTL-SDR and HackRF).
+SDR Scanner scans configured RF bands, detects active channels by SNR, demodulates audio (AM/NFM), and records mono WAV files with Broadcast WAV metadata. It is designed for continuous monitoring on modest hardware (e.g., Raspberry Pi 5), leveraging high-performance DSP techniques to ensure superior radio reception and efficient CPU usage.
 
-Key Features
-------------
-- Band scanning with SNR-based activity detection.
-- AM and NFM demodulation with stateful DSP.
-- Per-channel recording to WAV/BWF.
-- Built-in spectral subtraction noise reduction (always on; no config toggle) and soft limiting.
-- Multi-device parallel scanning.
-- Per-band exclusions (skip unwanted channel indices).
+Key Features & Optimizations
+----------------------------
+- **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection.
+- **High-Fidelity Demodulation**: Implements stateful AM and NFM demodulation with continuous phase tracking and DC-blocking, eliminating pops and discontinuities between audio blocks.
+- **Hardware Efficiency**:
+    - **Vectorized Math**: Heavy processing is delegated to NumPy and SciPy for maximum throughput.
+    - **Zero-Copy Architecture**: Uses memory stride tricks for overlapping FFT segments, avoiding expensive data copying.
+    - **Lazy Evaluation**: Computationally expensive segment analysis is performed only when transitions are detected, drastically reducing idle CPU load.
+- **State-of-the-Art Processing**:
+    - **Vectorized AGC**: High-quality, smooth automatic gain control for AM with independent attack and release timings.
+    - **Adaptive Noise Reduction**: Custom spectral subtraction provides significant hiss reduction with minimal overhead compared to standard libraries.
+- **Parallel Scanning**: Supports multiple SDR devices (RTL-SDR and HackRF) simultaneously with asynchronous I/O.
+- **Archive Ready**: Automatic recording to Broadcast WAV (BWF) with embedded metadata (frequency, timestamps, modulation).
 
 Quick Start
 -----------
