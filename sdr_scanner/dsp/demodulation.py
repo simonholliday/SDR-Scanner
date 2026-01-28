@@ -2,11 +2,12 @@
 Demodulation functions for various modulation types
 """
 
+import typing
+
 import numpy
 import numpy.typing
 import scipy.ndimage
 import scipy.signal
-import typing
 
 import sdr_scanner.constants
 import sdr_scanner.dsp.filters

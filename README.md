@@ -42,7 +42,7 @@ pip install -e .
 4) Run:
 
 ```bash
-sdr-scanner --band=air_civil_bristol --device-type=rtlsdr --device-index=0
+sdr-scanner --band air_civil_bristol --device-type rtlsdr --device-index 0
 ```
 
 Audio files are written to:
@@ -203,15 +203,15 @@ Parallel Scans (Multiple Devices)
 Run one process per device:
 
 ```bash
-sdr-scanner --band=air_civil_bristol --device-type=rtlsdr --device-index=0
-sdr-scanner --band=pmr --device-type=rtlsdr --device-index=1
+sdr-scanner --band air_civil_bristol --device-type rtlsdr --device-index 0
+sdr-scanner --band pmr --device-type rtlsdr --device-index 1
 ```
 
 If you need stricter real-time behavior, you can pin each scan to a CPU core:
 
 ```bash
-taskset -c 2 sdr-scanner --band=air_civil_bristol --device-index=0
-taskset -c 3 sdr-scanner --band=pmr --device-index=1
+taskset -c 2 sdr-scanner --band air_civil_bristol --device-index 0
+taskset -c 3 sdr-scanner --band pmr --device-index 1
 ```
 
 Resource and Performance Notes

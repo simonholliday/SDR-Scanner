@@ -108,11 +108,11 @@ async def run_scanner (config_path: str, band_name: str, device_type: str, devic
 		)
 
 		# Run the scan loop (blocks until interrupted)
-		await scan.scan()
+		await scan.scan ()
 
 	except KeyboardInterrupt:
 		# Ctrl+C is a normal way to stop, not an error
-		logger.info("Scan interrupted by user")
+		logger.info ("Scan interrupted by user")
 
 	except Exception as e:
 		# Log unexpected errors with full traceback
@@ -147,9 +147,9 @@ def main () -> int:
 		formatter_class=argparse.RawDescriptionHelpFormatter,
 		epilog="""
 Examples:
-  %(prog)s --band pmr                    # Scan PMR band with RTL-SDR
-  %(prog)s --band marine --device-type hackrf  # Scan marine band with HackRF
-  %(prog)s --list-bands                  # List all available bands
+  sdr-scanner --band pmr                    # Scan PMR band with RTL-SDR
+  sdr-scanner --band marine --device-type hackrf  # Scan marine band with HackRF
+  sdr-scanner --list-bands                  # List all available bands
 		"""
 	)
 

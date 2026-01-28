@@ -61,3 +61,13 @@ source venv/bin/activate
 
 # Install the package in editable mode
 pip install -e .
+
+5. Verification
+---------------
+After installation, you can verify everything is working by listing the available bands:
+
+# Using the CLI directly
+sdr-scanner --list-bands
+
+# Or using the Python module
+python3 -m sdr_scanner --list-bands

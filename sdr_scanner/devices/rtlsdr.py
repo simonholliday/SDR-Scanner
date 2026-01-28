@@ -11,13 +11,15 @@ Typical specifications:
 This implementation wraps the pyrtlsdr library to conform to the BaseDevice interface.
 """
 
-import rtlsdr
 import typing
+
+import rtlsdr
 
 import sdr_scanner.devices.base
 
 
-class RtlSdrDevice(sdr_scanner.devices.base.BaseDevice):
+class RtlSdrDevice (sdr_scanner.devices.base.BaseDevice):
+	
 	"""
 	Wrapper for RTL-SDR devices
 

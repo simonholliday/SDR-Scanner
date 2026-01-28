@@ -36,7 +36,7 @@ def _frame_rms (audio: numpy.ndarray, frame_len: int, hop: int) -> numpy.ndarray
 	n_frames = 1 + (audio.size - frame_len) // hop
 
 	# Stride tricks: create a 2D view of overlapping frames without copying data
-	# Each row is one frame of audio, frames overlap by (frame_len - hop) samples
+	# EACH row is one frame of audio, frames overlap by (frame_len - hop) samples
 	# This is much faster than a Python loop creating individual frame copies
 	audio_contig = numpy.ascontiguousarray(audio, dtype=numpy.float32)
 	frame_shape = (n_frames, frame_len)

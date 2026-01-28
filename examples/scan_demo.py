@@ -15,6 +15,7 @@ Key concepts:
 import asyncio
 import logging
 import sys
+import typing
 
 import sdr_scanner.config
 import sdr_scanner.scanner
@@ -39,7 +40,7 @@ def my_channel_event_handler (band: str, channel_index: int, is_active: bool, sn
 		is_active: True if the signal is now present, False if lost
 		snr_db: The measured Signal-to-Noise ratio
 	"""
-	
+
 	state_desc = "ACTIVE" if is_active else "INACTIVE"
 	print(f"\n>>> Event: Band [{band}] Channel {channel_index} is now {state_desc} ({snr_db:.1f} dB SNR)")
 
@@ -54,7 +55,7 @@ def my_recording_event_handler (band: str, channel_index: int, file_path: str) -
 		channel_index: The numerical index of the channel
 		file_path: The absolute path to the saved .wav file
 	"""
-	
+
 	print(f"\n>>> Recording Finished: {file_path}")
 	# Here you could trigger an upload, run speech-to-text, or send a notification.
 
@@ -67,16 +68,16 @@ async def run_custom_scanner () -> None:
 	try:
 		# 1. Load configuration from a YAML file
 		# This contains your hardware settings and band definitions
-		config_path = '../config.yaml'
+		config_path = './config.yaml'
 		config_data = sdr_scanner.config.load_config(config_path)
 
 		# 2. Instantiate the RadioScanner
 		# You can specify the band, device type, and device index here
 		scanner = sdr_scanner.scanner.RadioScanner(
 			config=config_data,
-			band_name='air_civil_bristol',      # Must match a band in your config.yaml
+			band_name='pmr',      # Must match a band in your config.yaml
 			device_type='rtlsdr', # 'rtlsdr' or 'hackrf'
-			device_index=1
+			device_index=0
 		)
 
 		# 3. Register a callback function

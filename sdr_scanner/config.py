@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import fractions
 import typing
+
 import pydantic
 import yaml
 
@@ -31,6 +32,7 @@ def _fraction_constructor (loader: yaml.SafeLoader, node: yaml.nodes.ScalarNode)
 	This allows representing precise radio frequencies that cannot be
 	perfectly represented as floating-point numbers.
 	"""
+
 	value = loader.construct_scalar(node)
 	return fractions.Fraction(value)
 
@@ -52,6 +54,7 @@ def _normalize_label (value: typing.Any) -> typing.Any:
 	Returns:
 		Uppercase string if input is string, otherwise original value
 	"""
+
 	if value is None:
 		return value
 
@@ -81,6 +84,7 @@ def _normalize_gain (value: typing.Any) -> typing.Any:
 	Raises:
 		ValueError: If string value is not 'auto' and can't be parsed as number
 	"""
+
 	if value is None:
 		return 'auto'
 

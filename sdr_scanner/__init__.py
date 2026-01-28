@@ -10,9 +10,9 @@ using RTL-SDR or HackRF hardware. Features include:
 - Broadcast WAV format with embedded metadata
 
 Typical usage:
-    python -m sdr_scanner --band pmr
-    python -m sdr_scanner --list-bands
-    python -m sdr_scanner --band airband --device-type hackrf
+    sdr-scanner --band pmr
+    sdr-scanner --list-bands
+    sdr-scanner --band airband --device-type hackrf
 """
 
 __version__ = "0.1.0"

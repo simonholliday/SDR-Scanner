@@ -21,16 +21,18 @@ to a unified internal interface.
 
 import importlib
 import logging
+import typing
+
 import numpy
 import numpy.typing
-import typing
 
 import sdr_scanner.devices.base
 
 logger = logging.getLogger(__name__)
 
 
-class HackRfDevice(sdr_scanner.devices.base.BaseDevice):
+class HackRfDevice (sdr_scanner.devices.base.BaseDevice):
+	
 	"""
 	Wrapper for HackRF devices with automatic binding detection.
 
@@ -196,7 +198,7 @@ class HackRfDevice(sdr_scanner.devices.base.BaseDevice):
 	@sample_rate.setter
 	def sample_rate (self, value: float) -> None:
 		self._sample_rate = value
-		self._call_safe('set_sample_rate', value)
+		self._call_safe ('set_sample_rate', value)
 
 	@property
 	def center_freq (self) -> float | None:
@@ -284,7 +286,7 @@ class HackRfDevice(sdr_scanner.devices.base.BaseDevice):
 			self._call_safe('start_rx', wrapper)
 
 	def cancel_read_async (self) -> None:
-		self._call_safe('stop_rx')
+		self._call_safe ('stop_rx')
 
 	def close (self) -> None:
 		self._call_safe('close')
@@ -325,8 +327,8 @@ class HackRfDevice(sdr_scanner.devices.base.BaseDevice):
 		# Extract I and Q components directly to the complex array.
 		# Normalize from [-128, 127] to approximately [-1, 1].
 		# This avoids large temporary float32 arrays and reshapes.
-		complex_samples.real = raw[0:n_complex*2:2].astype(numpy.float32) / 128.0
-		complex_samples.imag = raw[1:n_complex*2:2].astype(numpy.float32) / 128.0
+		complex_samples.real = raw[0:n_complex * 2:2].astype(numpy.float32) / 128.0
+		complex_samples.imag = raw[1:n_complex * 2:2].astype(numpy.float32) / 128.0
 
 		return complex_samples
 
