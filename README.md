@@ -8,7 +8,7 @@ SDR Scanner is a high-performance tool for monitoring and recording radio activi
 1.  **As a Command-Line Tool**: Quickly scan and record bands using simple terminal commands.
 2.  **As a Python Module**: Integrate radio scanning, detection, and callbacks directly into your own Python applications.
 
-By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan wide ranges of the radio spectrum—such as Airband or Maritime frequencies—and automatically record transmissions as they occur. The software handles the technical signal processing and hardware management in the background, allowing for efficient 24/7 monitoring even on modest hardware like a Raspberry Pi.
+By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan wide ranges of the radio spectrum - such as Airband or Maritime frequencies - and automatically record transmissions as they occur. The software handles the technical signal processing and hardware management in the background, allowing for efficient 24/7 monitoring even on modest hardware like a Raspberry Pi.
 
 Hardware Requirements
 ---------------------
@@ -20,6 +20,7 @@ To use this software, a compatible Software Defined Radio (SDR) USB device is re
 Key Features & Optimizations
 ----------------------------
 - **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection.
+- **Parallel Multi-Channel Recording**: Simultaneously detects and records all active channels in a band - unlike traditional handheld scanners which only play one channel at a time.
 - **High-Fidelity Demodulation**: Implements stateful AM and NFM demodulation with continuous phase tracking and DC-blocking, eliminating pops and discontinuities between audio blocks.
 - **Hardware Efficiency**:
     - **Vectorized Math**: Heavy processing is delegated to NumPy and SciPy for maximum throughput.
