@@ -1,12 +1,13 @@
 import asyncio
 import logging
+import time
+import typing
+
 import numpy
 import numpy.lib.stride_tricks
 import numpy.typing
 import scipy.fft
 import scipy.signal
-import time
-import typing
 
 import sdr_scanner.config
 import sdr_scanner.constants
@@ -146,6 +147,9 @@ class RadioScanner:
 		# Callbacks for channel state changes (ON/OFF)
 		self.state_callbacks: list[typing.Callable] = []
 
+		# Callbacks for completed recordings (Finalized)
+		self.recording_callbacks: list[typing.Callable] = []
+
 		# SDR device
 		self.sdr: typing.Any | None = None
 
@@ -228,6 +232,7 @@ class RadioScanner:
 		return channels
 
 	def add_state_callback (self, callback: typing.Callable) -> None:
+		
 		"""
 		Add a callback function to be called when a channel changes state.
 
@@ -235,7 +240,20 @@ class RadioScanner:
 		Synchronous and asynchronous callbacks are both supported and will be
 		executed on the main event loop.
 		"""
+		
 		self.state_callbacks.append(callback)
+
+	def add_recording_callback (self, callback: typing.Callable) -> None:
+		
+		"""
+		Add a callback function to be called when a recording is finished and saved.
+
+		The callback should accept (band_name: str, channel_index: int, file_path: str).
+		Synchronous and asynchronous callbacks are both supported and will be
+		executed on the main event loop.
+		"""
+		
+		self.recording_callbacks.append(callback)
 
 	def _precompute_fft_params (self) -> None:
 
@@ -813,8 +831,10 @@ class RadioScanner:
 
 			# Trigger state change callbacks on the main event loop
 			for callback in self.state_callbacks:
+
 				if asyncio.iscoroutinefunction(callback):
 					asyncio.run_coroutine_threadsafe(callback(self.band_name, channel_index, is_active, snr_db), loop)
+
 				else:
 					loop.call_soon_threadsafe(callback, self.band_name, channel_index, is_active, snr_db)
 
@@ -1003,12 +1023,14 @@ class RadioScanner:
 		self.channel_recorders[channel_freq] = channel_recorder
 
 	async def _stop_channel_recording (self, channel_freq: float) -> None:
+		
 		"""
 		Stop recording a channel and close the file
 
 		Args:
 			channel_freq: Channel center frequency in Hz
 		"""
+		
 		if channel_freq not in self.channel_recorders:
 			return
 
@@ -1016,6 +1038,23 @@ class RadioScanner:
 
 		# Close recorder (flushes buffer and closes WAV file)
 		await channel_recorder.close()
+
+		# Trigger recording finished callbacks on the main event loop
+		# Run these after close() so we are sure the file is finished and metadata is appended.
+		ch_idx = channel_recorder.channel_index
+		filepath = channel_recorder.filepath
+
+		loop = self.loop or asyncio.get_event_loop()
+
+		for callback in self.recording_callbacks:
+
+			if asyncio.iscoroutinefunction(callback):
+
+				asyncio.run_coroutine_threadsafe(callback(self.band_name, ch_idx, filepath), loop)
+
+			else:
+
+				loop.call_soon_threadsafe(callback, self.band_name, ch_idx, filepath)
 
 		# Remove from dictionary
 		del self.channel_recorders[channel_freq]

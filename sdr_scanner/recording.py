@@ -15,21 +15,24 @@ import collections
 import datetime
 import json
 import logging
-import numpy
-import numpy.typing
 import os
-import sdr_scanner.dsp.noise_reduction
-import soundfile
 import struct
 import threading
 import typing
 import uuid
+
+import numpy
+import numpy.typing
+import soundfile
+
+import sdr_scanner.dsp.noise_reduction
 
 
 logger = logging.getLogger(__name__)
 
 
 class ChannelRecorder:
+	
 	"""
 	Manages buffered audio recording for a single channel.
 
