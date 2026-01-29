@@ -141,6 +141,10 @@ class RadioScanner:
 		# Channel state tracking: True = on, False = off
 		self.channel_states: dict[float, bool] = {ch_freq: False for ch_freq in self.channels}
 
+		# Stuck channel tracking
+		self.channel_start_times: dict[float, float] = {}
+		self.channel_last_warning_times: dict[float, float] = {}
+
 		# Channel recorders: one per active channel
 		self.channel_recorders: dict[float, sdr_scanner.recording.ChannelRecorder] = {}
 
@@ -807,9 +811,22 @@ class RadioScanner:
 				trim_start = transition_idx
 				sample_offset = transition_idx
 
+				# Record channel activity start for stuck detection.
+				self.channel_start_times[channel_freq] = time.time()
+
+				if channel_freq in self.channel_last_warning_times:
+					del self.channel_last_warning_times[channel_freq]
+
 			else:
 
 				trim_end = transition_idx
+
+				# Clean up tracking state when channel turns off.
+				if channel_freq in self.channel_start_times:
+					del self.channel_start_times[channel_freq]
+
+				if channel_freq in self.channel_last_warning_times:
+					del self.channel_last_warning_times[channel_freq]
 
 			self.channel_states[channel_freq] = is_active
 
@@ -1127,6 +1144,32 @@ class RadioScanner:
 				idx = self.channel_original_indices.get(channel_freq, -1)
 				snr_db = channel_powers[i] - noise_floor_db
 				current_state = self.channel_states[channel_freq]
+
+				# Stuck channel detection: warn if PTT seems stuck or interference is constant.
+				if current_state and self.config.scanner.stuck_channel_threshold_seconds:
+
+					start_time = self.channel_start_times.get(channel_freq)
+
+					if start_time:
+
+						duration = now - start_time
+
+						if duration > self.config.scanner.stuck_channel_threshold_seconds:
+
+							last_warn = self.channel_last_warning_times.get(channel_freq, 0)
+
+							# Rate limit warnings to every 60 seconds to avoid flooding.
+
+							if now - last_warn > 60:
+
+								ch_idx = self.channel_original_indices.get(channel_freq, -1)
+
+								logger.warning(
+									f"STUCK CHANNEL WARNING: Channel {ch_idx} ({channel_freq/1e6:.4f} MHz) "
+									f"has been active for {duration:.1f} seconds"
+								)
+
+								self.channel_last_warning_times[channel_freq] = now
 				
 				threshold = self.snr_threshold_off_db if current_state else self.snr_threshold_db
 				above_threshold = snr_db > threshold

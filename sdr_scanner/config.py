@@ -135,6 +135,10 @@ class ScannerConfig(pydantic.BaseModel):
 	band_time_slice_ms: int = pydantic.Field(gt=0)
 	sample_queue_maxsize: int = pydantic.Field(default=30, gt=0)
 	calibration_frequency_hz: float | None = pydantic.Field(default=None, gt=0)
+	
+	# Optional: threshold in seconds to consider a channel "stuck" (e.g., constant transmitter).
+	# If exceeded, a warning will be logged to console. Set to null or remove to disable.
+	stuck_channel_threshold_seconds: float | None = pydantic.Field(default=None, gt=0)
 
 
 class RecordingConfig(pydantic.BaseModel):

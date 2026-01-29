@@ -17,6 +17,11 @@ scanner:
     # Set to null to disable calibration
     # Example: 93.7e+6 for a strong FM radio station at 93.7 MHz
     calibration_frequency_hz: 93.7e+6
+    
+    # Stuck channel detection: warn if a channel remains active for longer than X seconds.
+    # Particularly helpful for identifying interference or stuck transmitters.
+    # Set to null to disable. Recommended: 30-120 seconds.
+    stuck_channel_threshold_seconds: 60
 
 recording:
 
