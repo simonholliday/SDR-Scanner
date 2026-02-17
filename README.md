@@ -1,8 +1,6 @@
-SDR Scanner
-===========
+# SDR Scanner
 
-Overview
---------
+## Overview
 SDR Scanner is a high-performance tool for monitoring and recording radio activity using Software Defined Radio (SDR) hardware. It is designed to be used in two ways:
 
 1.  **As a Command-Line Tool**: Quickly scan and record bands using simple terminal commands.
@@ -10,15 +8,13 @@ SDR Scanner is a high-performance tool for monitoring and recording radio activi
 
 By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan wide ranges of the radio spectrum - such as Airband or Maritime frequencies - and automatically record transmissions as they occur. The software handles the technical signal processing and hardware management in the background, allowing for efficient 24/7 monitoring even on modest hardware like a Raspberry Pi.
 
-Hardware Requirements
----------------------
+## Hardware Requirements
 To use this software, a compatible Software Defined Radio (SDR) USB device is required. The code has been specifically tested and verified with the following hardware:
 
 *   **[RTL-SDR Blog V4 and V3](https://www.rtl-sdr.com/about-rtl-sdr/)**: High-quality, low-cost receivers.
 *   **[HackRF One](https://greatscottgadgets.com/hackrf/one/)**: A wideband transceiver capable of monitoring much larger frequency spans.
 
-Key Features & Optimizations
-----------------------------
+## Key Features & Optimizations
 - **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection.
 - **Parallel Multi-Channel Recording**: Simultaneously detects and records all active channels in a band - unlike traditional handheld scanners which only play one channel at a time.
 - **High-Fidelity Demodulation**: Implements stateful AM and NFM demodulation with continuous phase tracking and DC-blocking, eliminating pops and discontinuities between audio blocks.
@@ -32,8 +28,7 @@ Key Features & Optimizations
 - **Parallel Scanning**: Supports multiple SDR devices (RTL-SDR and HackRF) simultaneously with asynchronous I/O.
 - **Archive Ready**: Automatic recording to Broadcast WAV (BWF) with embedded metadata (frequency, timestamps, modulation).
 
-Quick Start
------------
+## Quick Start
 1) Install dependencies (see `installation.txt` for SDR drivers).
 2) Configure bands in `config.yaml`.
 3) Install package in editable mode:
@@ -51,15 +46,13 @@ Audio files are written to:
 ./audio/YYYY-MM-DD/<band>/<timestamp>_<band>_<channel>_<snr>dB_<device>_<index>.wav
 ```
 
-Command Line
-------------
+## Command Line
 ```bash
 sdr-scanner --band <band> [--config <path>] [--device-type rtlsdr|hackrf] [--device-index N]
 sdr-scanner --list-bands
 ```
 
-Python Module Usage
--------------------
+## Python Module Usage
 You can also use the scanner as a library in your own code. This allows you to respond to radio events programmatically.
 
 ```python
@@ -112,8 +105,7 @@ Options:
 - `--device-index`, `-i`: device index (default `0`).
 - `--list-bands`: list available bands and exit.
 
-Configuration
--------------
+## Configuration
 Config file is YAML. The top-level keys are `scanner`, `recording`, `band_defaults`, and `bands`.
 
 Scanner
@@ -183,8 +175,7 @@ Per-band keys:
 - `sdr_gain_db`: numeric or `auto`.
 - `exclude_channel_indices`: 0-based indices to skip (no analysis, no recording).
 
-Broadcast WAV (BWF) & Metadata
-------------------------------
+## Broadcast WAV (BWF) & Metadata
 Each recording captures industry-standard **Broadcast WAV (BWF)** metadata (EBU Tech 3285). This embeds technical details directly into the audio file, making it ideal for archival and automated post-processing.
 
 **Compatibility**: These are standard `.wav` files. They will play perfectly in any normal audio player (VLC, Windows Media Player, Audacity, mobile devices, etc.).
@@ -201,8 +192,7 @@ If you open a recording in a professional audio tool or a BWF viewer, you will s
 | **Time Reference** | `1152000` | Sample count since midnight (for precise timing) |
 
 
-Parallel Scans (Multiple Devices)
----------------------------------
+## Parallel Scans (Multiple Devices)
 Run one process per device:
 
 ```bash
@@ -217,8 +207,7 @@ taskset -c 2 sdr-scanner --band air_civil_bristol --device-index 0
 taskset -c 3 sdr-scanner --band pmr --device-index 1
 ```
 
-Resource and Performance Notes
-------------------------------
+## Resource and Performance Notes
 - **Sample rate dominates CPU**. Large bands at high sample rates increase FFT/PSD load.
 - **Overrun warnings** indicate the processing of a slice exceeded its real-time window. This can lead to dropped IQ blocks (`Sample queue full`).
 - **Noise reduction** runs during write/flush if enabled (default). It uses `apply_spectral_subtraction` which is efficient. The alternative `apply_noisereduce` implementation exists in `sdr_scanner/dsp/noise_reduction.py` for reference but is not used by default as it is significantly more CPU-intensive.
@@ -226,17 +215,14 @@ Resource and Performance Notes
 
 If you see repeated `Sample queue full` warnings, reduce the band's `sample_rate`, exclude channels, or increase `sample_queue_maxsize`.
 
-Limitations
------------
+## Limitations
 - Processing is slice-based; extremely wide bands or multiple high-rate scans can exceed real-time capacity on low-power CPUs.
 - If you enable `apply_noisereduce` (requires code change), it is CPU-intensive for long chunks; on constrained devices, stick with the default `apply_spectral_subtraction` or reduce `disk_flush_interval_seconds`.
 
-Author
-------
+## Author
 Written by Simon Holliday ([https://simonholliday.com/](https://simonholliday.com/))
 
-License
--------
+## License
 This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license.
 
 - **Non-Commercial**: You may use, adapt, and build upon this work for any non-commercial purpose.
