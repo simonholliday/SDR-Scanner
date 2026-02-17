@@ -223,10 +223,11 @@ If you see repeated `Sample queue full` warnings, reduce the band's `sample_rate
 Written by Simon Holliday ([https://simonholliday.com/](https://simonholliday.com/))
 
 ## License
-This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license.
 
-- **Non-Commercial**: You may use, adapt, and build upon this work for any non-commercial purpose.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+
+- **Copyleft**: Any modifications or improvements to this software must be shared back under the same license, even if used over a network.
 - **Attribution**: You must give appropriate credit to the original author (Simon Holliday).
-- **Commercial Use**: For commercial licensing inquiries, please contact the author.
+- **Commercial Use**: Permitted, provided you comply with the copyleft obligations of the AGPL-3.0.
 
 See the [LICENSE](LICENSE) file for the full legal text.

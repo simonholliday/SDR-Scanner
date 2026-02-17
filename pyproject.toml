@@ -9,7 +9,7 @@ description = "A versatile SDR band scanner for RTL-SDR and HackRF"
 authors = [
     { name = "Simon Holliday" }
 ]
-license = { text = "CC BY-NC 4.0" }
+license = { text = "AGPL-3.0" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
