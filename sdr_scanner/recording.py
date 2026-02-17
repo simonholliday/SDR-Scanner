@@ -434,7 +434,7 @@ class ChannelRecorder:
 		time_reference = self.bext_metadata['time_reference']
 		version = self.bext_metadata['version']
 		umid = b'\x00' * 64
-		reserved = b'\x00' * 190 # Version 1 has 190 reserved bytes before coding history if not using loudness
+		reserved = b'\x00' * 180 # Version 1 has 180 reserved bytes after the 10 loudness bytes
 
 		coding_history = self.bext_metadata['coding_history'].encode('ascii', errors='replace')
 		bext_data_size = 602 + len(coding_history)
