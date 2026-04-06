@@ -2,3 +2,4 @@ __pycache__/
 audio/
 config.yaml
 *.egg-info/
+.vscode
