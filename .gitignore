@@ -1,5 +1,7 @@
 __pycache__/
-audio/
+.vscode/
+.pytest_cache/audio/
 config.yaml
 *.egg-info/
-.vscode
+audio/
+examples/audio/
