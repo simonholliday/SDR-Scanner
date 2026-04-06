@@ -11,7 +11,6 @@ for archival and post-processing.
 """
 
 import asyncio
-import collections
 import datetime
 import json
 import logging
@@ -100,16 +99,14 @@ class ChannelRecorder:
 		self.noise_reduction_enabled = noise_reduction_enabled
 		self.initial_noise_floor_db: float | None = None
 
-		# Calculate maximum buffer size in samples (e.g., 5 seconds * 16000 Hz = 80000 samples)
-		# This prevents memory from growing unbounded if disk writes fall behind
-		max_buffer_samples = int(buffer_size_seconds * audio_sample_rate)
-		self.max_buffer_samples = max(0, max_buffer_samples)
-
-		# Chunked buffer: stores audio in variable-sized chunks rather than individual samples
-		# This reduces Python overhead - appending one chunk is faster than appending many samples
-		# Using deque allows efficient pop from front (when dropping old samples)
-		self.audio_buffer: collections.deque[numpy.typing.NDArray[numpy.float32]] = collections.deque()
-		self.audio_buffer_samples = 0  # Total samples currently in buffer
+		# Pre-allocated circular buffer: a fixed NumPy array with modulo wrap-around.
+		# Eliminates per-flush concatenation and Python-level iteration for drops.
+		max_buffer_samples = max(0, int(buffer_size_seconds * audio_sample_rate))
+		self.max_buffer_samples = max_buffer_samples
+		self._ring = numpy.zeros(max_buffer_samples, dtype=numpy.float32) if max_buffer_samples > 0 else numpy.array([], dtype=numpy.float32)
+		self._ring_write_head: int = 0      # Next write position (wraps via modulo)
+		self._ring_frames_written: int = 0  # Monotonic total frames written
+		self._ring_frames_flushed: int = 0  # Monotonic total frames already flushed
 
 		# Recording start time (used for filename and BWF metadata)
 		self.start_time = datetime.datetime.now()
@@ -228,11 +225,11 @@ class ChannelRecorder:
 	def append_audio (self, samples: numpy.typing.NDArray[numpy.float32]) -> None:
 
 		"""
-		Append audio samples to the in-memory buffer (non-blocking).
+		Append audio samples to the pre-allocated circular buffer (non-blocking).
 
-		Drops the oldest samples when the buffer would overflow, favoring
-		keeping the most recent audio so recordings stay aligned with
-		real-time activity.
+		The ring buffer silently overwrites the oldest samples when full,
+		keeping recordings aligned with real-time activity.  No Python-level
+		iteration or per-chunk allocation is required.
 
 		Args:
 			samples: Audio samples as float32 in range [-1.0, 1.0]
@@ -243,57 +240,44 @@ class ChannelRecorder:
 
 		with self._buffer_lock:
 
-			if self.max_buffer_samples <= 0:
+			cap = self.max_buffer_samples
+			if cap <= 0:
 				return
 
-			incoming_len = len(samples)
-
-			if incoming_len == 0:
+			n = len(samples)
+			if n == 0:
 				return
 
-			if incoming_len >= self.max_buffer_samples:
+			if n >= cap:
 				# Incoming chunk is larger than the whole buffer: keep only the tail.
-
-				dropped = self.audio_buffer_samples + (incoming_len - self.max_buffer_samples)
-
-				if dropped > 0:
-					logger.warning(f"Channel {self.channel_index}: Buffer overflow, dropping {dropped} oldest samples")
-
-				self.audio_buffer.clear()
-				self.audio_buffer_samples = 0
-				samples = samples[-self.max_buffer_samples:]
-				self.audio_buffer.append(samples)
-				self.audio_buffer_samples = len(samples)
+				overflow = self._ring_frames_written - self._ring_frames_flushed + n - cap
+				if overflow > 0:
+					logger.warning(f"Channel {self.channel_index}: Buffer overflow, dropping {overflow} oldest samples")
+				samples = samples[-cap:]
+				n = cap
+				self._ring[:n] = samples
+				self._ring_write_head = n % cap
+				self._ring_frames_written += n
 				return
 
-			overflow = self.audio_buffer_samples + incoming_len - self.max_buffer_samples
-
-			if overflow > 0:
-				# Drop oldest samples first to preserve real-time behavior.
-
-				self._drop_oldest_samples(overflow)
+			unflushed = self._ring_frames_written - self._ring_frames_flushed
+			if unflushed + n > cap:
+				overflow = unflushed + n - cap
 				logger.warning(f"Channel {self.channel_index}: Buffer overflow, dropping {overflow} oldest samples")
+				# Advance the flushed pointer to discard oldest unflushed data
+				self._ring_frames_flushed += overflow
 
-			self.audio_buffer.append(samples)
-			self.audio_buffer_samples += incoming_len
-
-	def _drop_oldest_samples (self, count:int) -> None:
-
-		"""
-		Drop a number of samples from the start of the chunked buffer.
-		"""
-
-		remaining = count
-		while remaining > 0 and self.audio_buffer:
-			chunk = self.audio_buffer[0]
-			if len(chunk) <= remaining:
-				self.audio_buffer.popleft()
-				self.audio_buffer_samples -= len(chunk)
-				remaining -= len(chunk)
+			head = self._ring_write_head
+			space_to_end = cap - head
+			if n <= space_to_end:
+				self._ring[head:head + n] = samples
 			else:
-				self.audio_buffer[0] = chunk[remaining:]
-				self.audio_buffer_samples -= remaining
-				remaining = 0
+				self._ring[head:] = samples[:space_to_end]
+				remainder = n - space_to_end
+				self._ring[:remainder] = samples[space_to_end:]
+
+			self._ring_write_head = (head + n) % cap
+			self._ring_frames_written += n
 
 	async def _flush_to_disk_periodically (self) -> None:
 
@@ -316,21 +300,34 @@ class ChannelRecorder:
 	async def _flush_buffer_to_disk (self) -> None:
 
 		"""
-		Flush accumulated buffer samples to disk in executor (non-blocking)
+		Flush accumulated buffer samples to disk in executor (non-blocking).
+
+		Reads all unflushed samples from the ring buffer into a contiguous
+		copy (so the writer thread owns its data), then advances the flushed
+		pointer.  No concatenation of separate chunks is needed.
 		"""
 
 		with self._buffer_lock:
 
-			if self.audio_buffer_samples == 0:
+			n_unflushed = self._ring_frames_written - self._ring_frames_flushed
+			if n_unflushed <= 0:
 				return
 
-			if len(self.audio_buffer) == 1:
-				samples_to_write = self.audio_buffer[0]
-			else:
-				samples_to_write = numpy.concatenate(list(self.audio_buffer)).astype(numpy.float32, copy=False)
+			cap = self.max_buffer_samples
+			# Oldest unflushed position in the ring
+			start = self._ring_frames_flushed % cap
 
-			self.audio_buffer.clear()
-			self.audio_buffer_samples = 0
+			if n_unflushed <= cap - start:
+				# Contiguous region — single slice, copy to detach from ring
+				samples_to_write = self._ring[start:start + n_unflushed].copy()
+			else:
+				# Wrapped — two slices
+				tail_len = cap - start
+				samples_to_write = numpy.empty(n_unflushed, dtype=numpy.float32)
+				samples_to_write[:tail_len] = self._ring[start:]
+				samples_to_write[tail_len:] = self._ring[:n_unflushed - tail_len]
+
+			self._ring_frames_flushed = self._ring_frames_written
 
 		await asyncio.get_running_loop().run_in_executor(None, self._write_samples_to_wav, samples_to_write)
 
@@ -347,16 +344,9 @@ class ChannelRecorder:
 		# This is 5-10x faster than the noisereduce library
 		if self.noise_reduction_enabled:
 			try:
-				# Use band-wide noise floor if available as a reference
-				noise_floor_offset = 0.0
-				if self.initial_noise_floor_db is not None:
-					# This is a heuristic: initial_noise_floor_db is in dB (log),
-					# but spectral subtraction works on magnitudes.
-					# For now, we still let it estimate locally but it's a candidate for improvement.
-					pass
-
 				samples, self.noise_mag = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
-					samples, self.audio_sample_rate, oversub=0.7, floor=0.06, noise_mag=self.noise_mag
+					samples, self.audio_sample_rate, oversub=0.7, floor=0.06,
+					noise_mag=self.noise_mag, noise_floor_db=self.initial_noise_floor_db,
 				)
 			except Exception as exc:
 				logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")

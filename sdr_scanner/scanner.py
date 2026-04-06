@@ -173,7 +173,8 @@ class RadioScanner:
 		self.channel_filter_sos: numpy.typing.NDArray[numpy.float64] | None = None
 
 		# Per-channel filter state for continuous processing (prevents clicks at block boundaries)
-		self.channel_filter_zi: dict[float, numpy.typing.NDArray[numpy.complex64]] = {}
+		# complex128 (float64 real+imag) prevents rounding drift in long-running sessions.
+		self.channel_filter_zi: dict[float, numpy.typing.NDArray[numpy.complex128]] = {}
 
 		# Per-channel demodulator state (last IQ sample and de-emphasis filter state)
 		self.channel_demod_state: dict[float, dict] = {}
@@ -184,6 +185,11 @@ class RadioScanner:
 		# Cumulative sample counter for continuous phase in frequency shifting
 		# This ensures the oscillator used for frequency shifting doesn't reset between blocks
 		self.sample_counter: int = 0
+
+		# EMA-smoothed noise floor (dB) and warmup counter.
+		# Smoothing eliminates per-slice jitter; warmup absorbs SDR startup transients.
+		self._noise_floor_ema: float | None = None
+		self._warmup_remaining: int = sdr_scanner.constants.NOISE_FLOOR_WARMUP_SLICES
 
 		# Sample queue for async streaming
 		self.sample_queue: asyncio.Queue | None = None
@@ -787,6 +793,45 @@ class RadioScanner:
 
 		return len(samples)
 
+	@staticmethod
+	def _refine_trim_on_audio (audio: numpy.typing.NDArray[numpy.float32], turning_on: bool) -> tuple[numpy.typing.NDArray[numpy.float32], int]:
+
+		"""
+		Refine a coarse PSD-based trim to sample-level precision on demodulated audio.
+
+		Scans the audio for the first (turn-ON) or last (turn-OFF) sample that
+		exceeds an amplitude threshold, then adds padding samples around that
+		point.  The fade is later applied only to the padding region so that
+		actual signal content (including attack transients) is never attenuated.
+
+		Returns:
+			(trimmed_audio, pad_samples) — the refined audio slice and the number
+			of padding samples at the fade end (start for turn-ON, end for turn-OFF).
+		"""
+
+		threshold = sdr_scanner.constants.TRIM_AMPLITUDE_THRESHOLD
+		n = len(audio)
+		if n == 0:
+			return audio, 0
+
+		above = numpy.where(numpy.abs(audio) >= threshold)[0]
+
+		if len(above) == 0:
+			# No sample exceeds threshold — return as-is with no padding info
+			return audio, 0
+
+		if turning_on:
+			first = int(above[0])
+			pad = min(first, sdr_scanner.constants.TRIM_PRE_SAMPLES)
+			start = first - pad
+			return audio[start:], pad
+		else:
+			last = int(above[-1])
+			remaining = n - 1 - last
+			pad = min(remaining, sdr_scanner.constants.TRIM_POST_SAMPLES)
+			end = last + 1 + pad
+			return audio[:end], pad
+
 	def _prepare_channel_transition (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, channel_index:int, snr_db: float, is_active:bool, current_state:bool, segment_psd:list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None, loop:asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
 
 		"""
@@ -981,7 +1026,7 @@ class RadioScanner:
 		# Initialize filter state if needed
 		if channel_freq not in self.channel_filter_zi:
 			zi = scipy.signal.sosfilt_zi(self.channel_filter_sos)
-			self.channel_filter_zi[channel_freq] = (zi * 0.0).astype(numpy.complex64)
+			self.channel_filter_zi[channel_freq] = (zi * 0.0).astype(numpy.complex128)
 
 		# Low-pass filter with state preservation
 		filtered, self.channel_filter_zi[channel_freq] = scipy.signal.sosfilt(
@@ -1113,8 +1158,24 @@ class RadioScanner:
 			psd_db, segment_psds = self._calculate_psd_data(samples, include_segment_psd=False)
 
 			# Phase 3: estimate noise floor from gaps, not the whole band.
-			noise_floor_db = self._estimate_noise_floor(psd_db)
+			# Raw per-slice estimate is EMA-smoothed to eliminate jitter.
+			raw_noise_floor_db = self._estimate_noise_floor(psd_db)
+			if self._noise_floor_ema is None:
+				# Seed the EMA on the first slice (avoids slow ramp from zero)
+				self._noise_floor_ema = raw_noise_floor_db
+			else:
+				alpha = sdr_scanner.constants.NOISE_FLOOR_EMA_ALPHA
+				self._noise_floor_ema = alpha * raw_noise_floor_db + (1.0 - alpha) * self._noise_floor_ema
+			noise_floor_db = self._noise_floor_ema
 			self._last_noise_floor_db = noise_floor_db
+
+			# Warmup: absorb SDR startup transients before enabling detection.
+			if self._warmup_remaining > 0:
+				self._warmup_remaining -= 1
+				self.sample_counter += len(samples)
+				if self._warmup_remaining == 0:
+					logger.info("Noise floor warmup complete (%.1f dB). Detection enabled.", noise_floor_db)
+				return
 
 			# Phase 4: bulk energy check avoids per-channel work when quiet.
 			# We use a threshold that's strictly lower than the lowest possible detection threshold.
@@ -1202,10 +1263,17 @@ class RadioScanner:
 
 						audio, new_state = demod_func(channel_iq, self.sample_rate, self.audio_sample_rate, state=demod_state)
 
-						if turning_on and self.fade_in_ms:
-							audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, self.fade_in_ms, 0.0)
-						elif turning_off and self.fade_out_ms:
-							audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, 0.0, self.fade_out_ms)
+						# Sample-level trim refinement + fade-only-padding:
+						# Refine the coarse PSD boundary on the demodulated audio,
+						# then apply fades only to the padding region (not signal content).
+						if turning_on:
+							audio, pad_samples = self._refine_trim_on_audio(audio, turning_on=True)
+							if self.fade_in_ms:
+								audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, self.fade_in_ms, None, pad_in_samples=pad_samples)
+						elif turning_off:
+							audio, pad_samples = self._refine_trim_on_audio(audio, turning_on=False)
+							if self.fade_out_ms:
+								audio = sdr_scanner.dsp.filters.apply_fade(audio, self.audio_sample_rate, None, self.fade_out_ms, pad_out_samples=pad_samples)
 
 						if not turning_off:
 							self.channel_demod_state[channel_freq] = new_state

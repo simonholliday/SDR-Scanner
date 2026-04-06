@@ -15,16 +15,19 @@ To use this software, a compatible Software Defined Radio (SDR) USB device is re
 *   **[HackRF One](https://greatscottgadgets.com/hackrf/one/)**: A wideband transceiver capable of monitoring much larger frequency spans.
 
 ## Key Features & Optimizations
-- **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection.
+- **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection. The noise floor is EMA-smoothed across slices to eliminate jitter, with a warmup period that absorbs SDR hardware startup transients before detection begins.
 - **Parallel Multi-Channel Recording**: Simultaneously detects and records all active channels in a band - unlike traditional handheld scanners which only play one channel at a time.
 - **High-Fidelity Demodulation**: Implements stateful AM and NFM demodulation with continuous phase tracking and DC-blocking, eliminating pops and discontinuities between audio blocks.
+- **Precise Transition Trimming**: After coarse PSD-based detection, demodulated audio is scanned at sample level to find exact signal boundaries. Padding is added around the boundary and faded with a half-cosine S-curve, preserving signal content (including attack transients) while eliminating clicks.
 - **Hardware Efficiency**:
     - **Vectorized Math**: Heavy processing is delegated to NumPy and SciPy for maximum throughput.
     - **Zero-Copy Architecture**: Uses memory stride tricks for overlapping FFT segments, avoiding expensive data copying.
     - **Lazy Evaluation**: Computationally expensive segment analysis is performed only when transitions are detected, drastically reducing idle CPU load.
+    - **Pre-Allocated Ring Buffer**: Per-channel audio buffering uses a fixed NumPy array with modulo wrap-around, eliminating per-flush concatenation and GC pressure.
 - **State-of-the-Art Processing**:
     - **Vectorized AGC**: High-quality, smooth automatic gain control for AM with independent attack and release timings.
-    - **Adaptive Noise Reduction**: Custom spectral subtraction provides significant hiss reduction with minimal overhead compared to standard libraries.
+    - **Noise-Floor-Guided Spectral Subtraction**: The band-wide PSD noise floor is passed to the spectral subtraction stage for more reliable noise frame classification, reducing musical noise artifacts compared to percentile-only heuristics.
+    - **Float64 Filter State**: IIR filter states (channel extraction, decimation) use double precision to prevent rounding drift in long-running sessions.
 - **Parallel Scanning**: Supports multiple SDR devices (RTL-SDR and HackRF) simultaneously with asynchronous I/O.
 - **Archive Ready**: Automatic recording to Broadcast WAV (BWF) with embedded metadata (frequency, timestamps, modulation).
 
@@ -137,7 +140,7 @@ recording:
 - `buffer_size_seconds`: max in-memory audio per channel before drops.
 - `disk_flush_interval_seconds`: how often to flush to disk.
 - `audio_sample_rate`: output WAV rate (Hz).
-- `fade_in_ms`/`fade_out_ms`: fades applied at channel start/stop.
+- `fade_in_ms`/`fade_out_ms`: half-cosine fades applied to the padding region at channel start/stop (signal content is never attenuated).
 - `soft_limit_drive`: post-processing soft limiter drive. Typical range 1.5-3.0 (higher = stronger limiting).
 - `noise_reduction_enabled`: toggle spectral subtraction noise reduction (default: true).
 - `recording_hold_time_ms`: duration in ms to continue recording after signal drops below threshold (default: 500).
@@ -210,7 +213,7 @@ taskset -c 3 sdr-scanner --band pmr --device-index 1
 ## Resource and Performance Notes
 - **Sample rate dominates CPU**. Large bands at high sample rates increase FFT/PSD load.
 - **Overrun warnings** indicate the processing of a slice exceeded its real-time window. This can lead to dropped IQ blocks (`Sample queue full`).
-- **Noise reduction** runs during write/flush if enabled (default). It uses `apply_spectral_subtraction` which is efficient. The alternative `apply_noisereduce` implementation exists in `sdr_scanner/dsp/noise_reduction.py` for reference but is not used by default as it is significantly more CPU-intensive.
+- **Noise reduction** runs during write/flush if enabled (default). It uses `apply_spectral_subtraction` which is efficient and receives the band-wide noise floor for improved frame classification. The alternative `apply_noisereduce` implementation exists in `sdr_scanner/dsp/noise_reduction.py` for reference but is not used by default as it is significantly more CPU-intensive.
 - **Queue size** provides burst tolerance but uses RAM (each slice can be several MB).
 
 If you see repeated `Sample queue full` warnings, reduce the band's `sample_rate`, exclude channels, or increase `sample_queue_maxsize`.

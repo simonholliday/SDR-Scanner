@@ -167,7 +167,8 @@ def apply_spectral_subtraction (
 	sample_rate: int,
 	oversub: float = 0.7,
 	floor: float = 0.06,
-	noise_mag: numpy.ndarray | None = None
+	noise_mag: numpy.ndarray | None = None,
+	noise_floor_db: float | None = None
 ) -> tuple[numpy.ndarray, numpy.ndarray]:
 
 	"""
@@ -180,12 +181,21 @@ def apply_spectral_subtraction (
 	4. Apply smoothing to reduce "musical noise" artifacts
 	5. Convert back to time domain (ISTFT)
 
+	When ``noise_floor_db`` is provided (from band-wide PSD estimation), it
+	is used to classify STFT frames as noise-only more reliably than the
+	default percentile heuristic — especially important when the audio chunk
+	is mostly speech/signal and there are few truly quiet frames.
+
 	Args:
 		audio: Input audio signal
 		sample_rate: Audio sample rate in Hz
 		oversub: Noise oversubtraction factor (>1 = more aggressive)
 		floor: Minimum gain floor to prevent complete zeroing
 		noise_mag: Pre-computed noise magnitude spectrum (optional)
+		noise_floor_db: Band-wide noise floor estimate in dB (optional).
+			When provided, frames with energy below this level (plus a
+			small margin) are used for noise estimation instead of the
+			fixed 20th percentile.
 
 	Returns:
 		Tuple of (denoised_audio, noise_mag) where noise_mag can be reused
@@ -223,8 +233,22 @@ def apply_spectral_subtraction (
 
 		# Calculate total energy per frame (sum across all frequencies)
 		frame_energy = numpy.mean(magnitude * magnitude, axis=0)
-		energy_threshold = numpy.percentile(frame_energy, 20.0)
-		noise_frames = magnitude[:, frame_energy <= energy_threshold]
+
+		if noise_floor_db is not None:
+			# Use band-wide noise floor from PSD analysis for more reliable
+			# frame classification.  Convert dB to linear energy and add a
+			# 3 dB margin so frames just above the noise floor are included.
+			noise_energy_linear = 10.0 ** ((noise_floor_db + 3.0) / 10.0)
+			energy_threshold = noise_energy_linear
+			noise_frames = magnitude[:, frame_energy <= energy_threshold]
+			# Fall back to percentile if the dB-based threshold selects nothing
+			# (can happen when the dB reference and audio domain differ in scale)
+			if noise_frames.size == 0:
+				energy_threshold = numpy.percentile(frame_energy, 20.0)
+				noise_frames = magnitude[:, frame_energy <= energy_threshold]
+		else:
+			energy_threshold = numpy.percentile(frame_energy, 20.0)
+			noise_frames = magnitude[:, frame_energy <= energy_threshold]
 
 		# Average the quiet frames to get noise spectrum estimate
 		if noise_frames.size == 0:

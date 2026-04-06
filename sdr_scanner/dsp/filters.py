@@ -133,10 +133,13 @@ def _decimate_common (
 		state[sos_key] = scipy.signal.butter(8, cutoff, fs=sample_rate, output='sos')
 
 	if zi_key not in state:
-		#ZI needs to match input dtype (complex if signal is complex)
-		# However, scipy logic creates zeros of whatever type, but let's be explicit
+		# Use float64/complex128 for filter state to prevent rounding drift
+		# in long-running sessions.  The output is downcast after filtering.
 		zi_shape = (state[sos_key].shape[0], 2)
-		state[zi_key] = numpy.zeros(zi_shape, dtype=signal.dtype)
+		if numpy.issubdtype(signal.dtype, numpy.complexfloating):
+			state[zi_key] = numpy.zeros(zi_shape, dtype=numpy.complex128)
+		else:
+			state[zi_key] = numpy.zeros(zi_shape, dtype=numpy.float64)
 
 	if phase_key not in state:
 		state[phase_key] = 0
@@ -205,21 +208,29 @@ def apply_fade (
 	audio: numpy.typing.NDArray[numpy.float32],
 	sample_rate: int,
 	fade_in_ms: float | None,
-	fade_out_ms: float | None
+	fade_out_ms: float | None,
+	pad_in_samples: int = 0,
+	pad_out_samples: int = 0,
 ) -> numpy.typing.NDArray[numpy.float32]:
 
 	"""
 	Apply smooth fade-in/out to prevent clicks at recording boundaries.
 
-	Fades prevent audible clicks/pops when recordings start or stop abruptly.
-	Uses smoothstep curves (S-shaped) instead of linear for more natural sound.
-	If either duration is None, fading is disabled.
+	Uses half-cosine S-curves for smooth transitions.  When ``pad_in_samples``
+	or ``pad_out_samples`` are provided the fade is constrained to the padding
+	region so that actual signal content (including attack transients) is never
+	attenuated.  If the padding region is smaller than the requested fade
+	duration the fade is shortened to fit the padding.
 
 	Args:
 		audio: Input audio signal
 		sample_rate: Audio sample rate in Hz
 		fade_in_ms: Fade-in duration in milliseconds (None to disable)
 		fade_out_ms: Fade-out duration in milliseconds (None to disable)
+		pad_in_samples: Number of padding samples prepended before signal onset.
+			When >0, fade-in is limited to this region.
+		pad_out_samples: Number of padding samples appended after signal end.
+			When >0, fade-out is limited to this region.
 
 	Returns:
 		Audio signal with fades applied
@@ -233,27 +244,28 @@ def apply_fade (
 		return audio
 
 	# Convert fade durations from milliseconds to sample counts
-	# Handle None values by using 0 length (no fade)
 	fade_in_len = int(sample_rate * (fade_in_ms / 1000.0)) if fade_in_ms is not None else 0
 	fade_out_len = int(sample_rate * (fade_out_ms / 1000.0)) if fade_out_ms is not None else 0
+
+	# Constrain fades to padding regions when specified (preserves signal content)
+	if pad_in_samples > 0:
+		fade_in_len = min(fade_in_len, pad_in_samples)
+	if pad_out_samples > 0:
+		fade_out_len = min(fade_out_len, pad_out_samples)
 
 	# Ensure fades don't exceed audio length (fades can't overlap)
 	fade_in_len = min(fade_in_len, n_samples)
 	fade_out_len = min(fade_out_len, n_samples - fade_in_len)
 
 	if fade_in_len > 0:
-		# Smoothstep curve: f(t) = t^2 * (3 - 2t)
-		# This creates an S-shaped curve that's smoother than linear
-		# Starts slow, accelerates in middle, slows at end
-		ramp_in = numpy.linspace(0.0, 1.0, fade_in_len, endpoint=True, dtype=audio.dtype)
-		ramp_in = ramp_in * ramp_in * (3.0 - 2.0 * ramp_in)
-		audio[:fade_in_len] *= ramp_in
+		# Half-cosine S-curve: (1 - cos(πt)) / 2
+		# Zero first and second derivatives at endpoints — smoother than smoothstep
+		ramp_in = (1.0 - numpy.cos(numpy.linspace(0.0, numpy.pi, fade_in_len, dtype=numpy.float64))) / 2.0
+		audio[:fade_in_len] *= ramp_in.astype(audio.dtype)
 
 	if fade_out_len > 0:
-		# Same smoothstep curve, but inverted (1.0 -> 0.0)
-		ramp_out = numpy.linspace(0.0, 1.0, fade_out_len, endpoint=True, dtype=audio.dtype)
-		ramp_out = ramp_out * ramp_out * (3.0 - 2.0 * ramp_out)
-		ramp_out = 1.0 - ramp_out
-		audio[-fade_out_len:] *= ramp_out
+		# Same half-cosine, inverted (1.0 -> 0.0)
+		ramp_out = (1.0 + numpy.cos(numpy.linspace(0.0, numpy.pi, fade_out_len, dtype=numpy.float64))) / 2.0
+		audio[-fade_out_len:] *= ramp_out.astype(audio.dtype)
 
 	return audio

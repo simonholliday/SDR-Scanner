@@ -81,3 +81,35 @@ DC_SPIKE_BINS = 3
 # 8 segments provides good balance: 50% overlap gives 15 independent estimates
 # Higher values reduce noise but make narrowband signals harder to distinguish
 WELCH_SEGMENTS = 8
+
+# ==============================================================================
+# Noise Floor Estimation Constants
+# ==============================================================================
+
+# EMA (Exponential Moving Average) smoothing factor for the noise floor estimate.
+# Lower values = more smoothing (slower to adapt).  0.15 provides a ~1 second
+# settling time at typical slice rates (~6-10 slices/sec) while filtering out
+# per-slice jitter from adjacent-channel activity and SDR gain fluctuations.
+NOISE_FLOOR_EMA_ALPHA = 0.15
+
+# Number of processing slices to absorb before enabling detection.
+# SDR hardware (especially RTL-SDR) produces transient spikes at startup from
+# PLL settling and AGC convergence.  10 slices at ~100ms each ≈ 1 second.
+NOISE_FLOOR_WARMUP_SLICES = 10
+
+# ==============================================================================
+# Sample-Level Transition Trimming Constants
+# ==============================================================================
+
+# Amplitude threshold (0-1 linear scale) for sample-level transition refinement.
+# After coarse PSD-based transition detection, the demodulated audio is scanned
+# to find the exact sample where signal begins/ends.  This threshold should be
+# well above the noise floor but below typical signal levels.
+TRIM_AMPLITUDE_THRESHOLD = 0.02
+
+# Number of audio samples to keep as padding before signal onset (fade-in region)
+# and after signal end (fade-out region).  The fade is applied only to this
+# padding, preserving the full signal content including attack transients.
+# At 16 kHz audio: 240 samples ≈ 15ms, 800 samples ≈ 50ms.
+TRIM_PRE_SAMPLES = 240
+TRIM_POST_SAMPLES = 800
