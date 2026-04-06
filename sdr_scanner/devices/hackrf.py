@@ -124,6 +124,15 @@ class HackRfDevice (sdr_scanner.devices.base.BaseDevice):
 					self._funcs[key] = func
 					break
 
+		# Verify that all critical functions were discovered.
+		required = {'set_sample_rate', 'set_freq', 'start_rx', 'stop_rx', 'close'}
+		missing = required - self._funcs.keys()
+		if missing:
+			raise RuntimeError(
+				f"HackRF binding is missing required functions: {', '.join(sorted(missing))}. "
+				f"The installed binding may be incompatible."
+			)
+
 	def _call_safe (self, key: str, *args: typing.Any) -> None:
 		"""
 		Call a mapped function, handling both module-level and method signatures.
@@ -227,13 +236,26 @@ class HackRfDevice (sdr_scanner.devices.base.BaseDevice):
 		(ideally you'd maximize LNA first, then use VGA for fine tuning),
 		but it works for most applications.
 		"""
-		self._gain_db = None if value == 'auto' else float(value) if value is not None else None
-
-		if self._gain_db is not None:
+		if value == 'auto' or value is None:
+			# HackRF has no hardware AGC.  Use sensible defaults and warn.
+			logger.warning(
+				"HackRF does not support automatic gain. "
+				"Defaulting to LNA=32 dB, VGA=30 dB. "
+				"Set sdr_gain_db to a numeric value in config.yaml for manual control."
+			)
+			self._gain_db = 32.0
+			self._call_safe('set_lna_gain', 32)
+			self._call_safe('set_vga_gain', 30)
+		else:
+			self._gain_db = float(value)
 			gain_val = int(self._gain_db)
-			# Set both gain stages to the same value
-			self._call_safe('set_vga_gain', gain_val)
-			self._call_safe('set_lna_gain', gain_val)
+			# Clamp to valid hardware ranges and step sizes
+			lna_gain = min(gain_val, 40) - (min(gain_val, 40) % 8)  # 0-40 in 8 dB steps
+			vga_gain = min(gain_val, 62) - (min(gain_val, 62) % 2)  # 0-62 in 2 dB steps
+			self._call_safe('set_lna_gain', lna_gain)
+			self._call_safe('set_vga_gain', vga_gain)
+			if lna_gain != gain_val or vga_gain != gain_val:
+				logger.info(f"HackRF gain clamped: LNA={lna_gain} dB (8 dB steps, max 40), VGA={vga_gain} dB (2 dB steps, max 62)")
 
 	def read_samples_async (self, callback: typing.Callable, num_samples: int) -> None:
 		"""
@@ -289,6 +311,10 @@ class HackRfDevice (sdr_scanner.devices.base.BaseDevice):
 		self._call_safe ('stop_rx')
 
 	def close (self) -> None:
+		try:
+			self.cancel_read_async()
+		except Exception:
+			pass
 		self._call_safe('close')
 
 		if self._initialized_library and hasattr(self._module, 'pyhackrf_exit'):

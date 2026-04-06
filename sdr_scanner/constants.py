@@ -19,8 +19,8 @@ NFM_DEEMPHASIS_TAU = 300e-6  # 300 microseconds
 
 # Maximum frequency deviation for NFM
 # Used to normalize the demodulated audio to the range [-1, 1]
-# NFM typically uses ±5 kHz deviation (narrow compared to broadcast FM's ±75 kHz)
-NFM_DEVIATION_HZ = 2.5e3  # 2.5 kHz deviation
+# NFM typically uses ±2.5 kHz deviation (narrow compared to broadcast FM's ±75 kHz)
+NFM_DEVIATION_HZ = 2.5e3  # 2.5 kHz peak deviation
 
 # Oversampling factor for Intermediate Frequency (IF) decimation
 # A factor of 3 to 4 times the final audio rate ensures the FM discriminator 

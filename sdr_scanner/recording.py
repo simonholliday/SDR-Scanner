@@ -214,7 +214,7 @@ class ChannelRecorder:
 		self.flush_task: typing.Any = None
 
 		# Flag to indicate if recorder is closing
-		self.closing = False
+		self._closing = threading.Event()
 		self.noise_mag: numpy.ndarray | None = None
 
 		self._write_lock = threading.Lock()
@@ -235,7 +235,7 @@ class ChannelRecorder:
 			samples: Audio samples as float32 in range [-1.0, 1.0]
 		"""
 
-		if self.closing:
+		if self._closing.is_set():
 			return
 
 		with self._buffer_lock:
@@ -288,7 +288,7 @@ class ChannelRecorder:
 
 		try:
 
-			while not self.closing:
+			while not self._closing.is_set():
 
 				await asyncio.sleep(self.disk_flush_interval)
 				await self._flush_buffer_to_disk()
@@ -307,6 +307,9 @@ class ChannelRecorder:
 		pointer.  No concatenation of separate chunks is needed.
 		"""
 
+		# NOTE: This intentionally uses a threading.Lock (not asyncio.Lock) because
+		# append_audio() is called from the executor thread.  The critical section
+		# is a fast memcpy so event-loop blocking is negligible.
 		with self._buffer_lock:
 
 			n_unflushed = self._ring_frames_written - self._ring_frames_flushed
@@ -372,7 +375,7 @@ class ChannelRecorder:
 		recording is self-describing.
 		"""
 
-		self.closing = True
+		self._closing.set()
 
 		# Cancel flush task if running
 		# Note: flush_task is a concurrent.futures.Future, not an asyncio.Task

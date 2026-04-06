@@ -216,6 +216,8 @@ def apply_fade (
 	"""
 	Apply smooth fade-in/out to prevent clicks at recording boundaries.
 
+	Modifies the input array in-place and returns it.
+
 	Uses half-cosine S-curves for smooth transitions.  When ``pad_in_samples``
 	or ``pad_out_samples`` are provided the fade is constrained to the padding
 	region so that actual signal content (including attack transients) is never

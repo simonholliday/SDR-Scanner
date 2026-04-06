@@ -230,16 +230,10 @@ class RadioScanner:
 			List of channel center frequencies in Hz
 		"""
 
-		channels = []
-
-		freq = self.freq_start
-
-		while freq <= self.freq_end:
-			# Incrementally step through the band; order matters for indexing.
-			channels.append(freq)
-			freq += self.channel_spacing
-
-		return channels
+		# Use integer indexing to avoid floating-point accumulation drift.
+		# Repeated `freq += spacing` would accumulate rounding error over many channels.
+		n_channels = int(round((self.freq_end - self.freq_start) / self.channel_spacing)) + 1
+		return [self.freq_start + i * self.channel_spacing for i in range(n_channels)]
 
 	def add_state_callback (self, callback: typing.Callable) -> None:
 		
@@ -718,8 +712,11 @@ class RadioScanner:
 		logger.info(f"Time slice: {self.band_time_slice_ms} ms ({self.samples_per_slice} samples)")
 
 		while True:
-			# Get samples from queue (filled by background thread)
+			# Get samples from queue (filled by background thread).
+			# A None sentinel signals that the streaming task has ended.
 			samples = await self.sample_queue.get()
+			if samples is None:
+				return
 			yield samples
 
 	def _calculate_psd_data (self, samples: numpy.typing.NDArray[numpy.complex64], include_segment_psd: bool = True) -> tuple[numpy.typing.NDArray[numpy.float64], list[numpy.typing.NDArray[numpy.float64]] | None]:
@@ -879,7 +876,7 @@ class RadioScanner:
 			channel_mhz = channel_freq / 1e6
 
 			logger.info(f"Channel {channel_index} {state_str} (f = {channel_mhz:.5f} MHz, SNR = {snr_db:.1f}dB, recording: {'YES' if self.can_record else 'NO'})")
-			print("".join("X" if self.channel_states[ch] else "-" for ch in self.channels))
+			logger.debug("".join("X" if self.channel_states[ch] else "-" for ch in self.channels))
 
 			if turning_on and self.can_record:
 
@@ -1045,7 +1042,7 @@ class RadioScanner:
 		Args:
 			channel_freq: Channel center frequency in Hz
 			channel_index: Channel index number
-			snr_db: Passed for into only, may be used to generate filename_suffix
+			snr_db: Passed for info only, used to generate filename_suffix
 			loop: Event loop to use for creating async tasks
 		"""
 
@@ -1106,7 +1103,7 @@ class RadioScanner:
 		ch_idx = channel_recorder.channel_index
 		filepath = channel_recorder.filepath
 
-		loop = self.loop or asyncio.get_event_loop()
+		loop = self.loop or asyncio.get_running_loop()
 
 		for callback in self.recording_callbacks:
 
@@ -1209,11 +1206,11 @@ class RadioScanner:
 				# Stuck channel detection: warn if PTT seems stuck or interference is constant.
 				if current_state and self.config.scanner.stuck_channel_threshold_seconds:
 
-					start_time = self.channel_start_times.get(channel_freq)
+					ch_start_time = self.channel_start_times.get(channel_freq)
 
-					if start_time:
+					if ch_start_time:
 
-						duration = now - start_time
+						duration = now - ch_start_time
 
 						if duration > self.config.scanner.stuck_channel_threshold_seconds:
 
@@ -1278,7 +1275,9 @@ class RadioScanner:
 						if not turning_off:
 							self.channel_demod_state[channel_freq] = new_state
 
-						self.channel_recorders[channel_freq].append_audio(audio)
+						recorder = self.channel_recorders.get(channel_freq)
+						if recorder:
+							recorder.append_audio(audio)
 
 				if turning_off:
 					self.channel_filter_zi.pop(channel_freq, None)
@@ -1327,8 +1326,19 @@ class RadioScanner:
 					self.samples_per_slice
 				)
 
-			# Start streaming task in background
-			asyncio.create_task(start_streaming())
+			# Start streaming task in background.
+			# Store the reference so errors don't vanish silently.
+			streaming_task = asyncio.create_task(start_streaming())
+
+			def _on_streaming_done (task: asyncio.Task) -> None:
+				exc = task.exception() if not task.cancelled() else None
+				if exc:
+					logger.error(f"SDR streaming task failed: {exc}", exc_info=exc)
+					# Signal the sample queue to unblock the processing loop
+					if self.sample_queue:
+						self.sample_queue.put_nowait(None)
+
+			streaming_task.add_done_callback(_on_streaming_done)
 
 			logger.info("Started async SDR streaming")
 
@@ -1357,4 +1367,4 @@ class RadioScanner:
 			try:
 				await asyncio.shield(self._cleanup_sdr())
 			except asyncio.CancelledError:
-				pass
+				logger.debug("Cleanup completed despite task cancellation")

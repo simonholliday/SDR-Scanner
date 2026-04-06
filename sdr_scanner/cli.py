@@ -110,10 +110,6 @@ async def run_scanner (config_path: str, band_name: str, device_type: str, devic
 		# Run the scan loop (blocks until interrupted)
 		await scan.scan ()
 
-	except KeyboardInterrupt:
-		# Ctrl+C is a normal way to stop, not an error
-		logger.info ("Scan interrupted by user")
-
 	except Exception as e:
 		# Log unexpected errors with full traceback
 		logger.error(f"Error running scanner: {e}", exc_info=True)

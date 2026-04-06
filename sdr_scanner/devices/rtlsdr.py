@@ -11,11 +11,14 @@ Typical specifications:
 This implementation wraps the pyrtlsdr library to conform to the BaseDevice interface.
 """
 
+import logging
 import typing
 
 import rtlsdr
 
 import sdr_scanner.devices.base
+
+logger = logging.getLogger(__name__)
 
 
 class RtlSdrDevice (sdr_scanner.devices.base.BaseDevice):
@@ -154,4 +157,7 @@ class RtlSdrDevice (sdr_scanner.devices.base.BaseDevice):
 
 	def close (self) -> None:
 		"""Close the device and release resources"""
-		self._device.close()
+		try:
+			self._device.close()
+		except Exception as exc:
+			logger.warning(f"Error closing RTL-SDR device: {exc}")

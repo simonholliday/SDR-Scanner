@@ -12,7 +12,7 @@ by accepting a device type string and returning the appropriate instance.
 import typing
 
 
-def create_device (device_type: str, device_index: int = 0) -> typing.Any:
+def create_device (device_type: str, device_index: int = 0) -> 'sdr_scanner.devices.base.BaseDevice':
 	"""
 	Factory function to create SDR device instances.
 
@@ -45,18 +45,15 @@ def create_device (device_type: str, device_index: int = 0) -> typing.Any:
 		device.gain = 'auto'
 	"""
 
-	# Lazy imports to avoid loading libraries for unused device types
-	import sdr_scanner.devices.rtlsdr
-	import sdr_scanner.devices.hackrf
-
 	device_type_lower = device_type.lower()
 
-	# RTL-SDR (accept multiple common name variations)
+	# Lazy imports: only load the binding for the requested device type.
 	if device_type_lower in ('rtl', 'rtlsdr', 'rtl-sdr'):
+		import sdr_scanner.devices.rtlsdr
 		return sdr_scanner.devices.rtlsdr.RtlSdrDevice(device_index)
 
-	# HackRF (accept multiple common name variations)
 	if device_type_lower in ('hackrf', 'hackrf-one', 'hackrfone'):
+		import sdr_scanner.devices.hackrf
 		return sdr_scanner.devices.hackrf.HackRfDevice(device_index)
 
 	raise ValueError(f"Unsupported device_type: {device_type}")

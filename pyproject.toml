@@ -26,8 +26,8 @@ dependencies = [
 [project.scripts]
 sdr-scanner = "sdr_scanner.cli:main"
 
-[tool.setuptools]
-packages = ["sdr_scanner"]
+[tool.setuptools.packages.find]
+include = ["sdr_scanner*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "sdr_scanner.__version__"}

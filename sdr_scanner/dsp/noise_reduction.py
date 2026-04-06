@@ -234,16 +234,20 @@ def apply_spectral_subtraction (
 		# Calculate total energy per frame (sum across all frequencies)
 		frame_energy = numpy.mean(magnitude * magnitude, axis=0)
 
-		if noise_floor_db is not None:
-			# Use band-wide noise floor from PSD analysis for more reliable
-			# frame classification.  Convert dB to linear energy and add a
-			# 3 dB margin so frames just above the noise floor are included.
-			noise_energy_linear = 10.0 ** ((noise_floor_db + 3.0) / 10.0)
-			energy_threshold = noise_energy_linear
+		if noise_floor_db is not None and frame_energy.size > 1:
+			# Use the band-wide noise floor as a relative guide for frame
+			# classification.  The noise floor dB (from PSD analysis) and
+			# STFT frame energy are in different scales, so we can't compare
+			# them directly.  Instead we find the median frame energy (which
+			# typically corresponds to the noise level in speech-dominant
+			# blocks) and select frames within 3 dB of the minimum as noise.
+			min_energy = numpy.min(frame_energy)
+			# 3 dB above the quietest frame — captures noise variation
+			# without including speech frames.
+			energy_threshold = min_energy * 2.0  # +3 dB in linear power
 			noise_frames = magnitude[:, frame_energy <= energy_threshold]
-			# Fall back to percentile if the dB-based threshold selects nothing
-			# (can happen when the dB reference and audio domain differ in scale)
-			if noise_frames.size == 0:
+			# Fall back to percentile if that selects too few frames
+			if noise_frames.shape[1] < 2:
 				energy_threshold = numpy.percentile(frame_energy, 20.0)
 				noise_frames = magnitude[:, frame_energy <= energy_threshold]
 		else:

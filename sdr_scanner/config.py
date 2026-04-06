@@ -16,12 +16,15 @@ failures.
 from __future__ import annotations
 
 import fractions
+import logging
 import typing
 
 import pydantic
 import yaml
 
 import sdr_scanner.constants
+
+logger = logging.getLogger(__name__)
 
 
 def _fraction_constructor (loader: yaml.SafeLoader, node: yaml.nodes.ScalarNode) -> fractions.Fraction:
@@ -37,8 +40,11 @@ def _fraction_constructor (loader: yaml.SafeLoader, node: yaml.nodes.ScalarNode)
 	return fractions.Fraction(value)
 
 
-# Register the !fraction tag with the YAML loader.
-yaml.SafeLoader.add_constructor('!fraction', _fraction_constructor)
+# Custom loader subclass so the !fraction tag doesn't mutate the global SafeLoader.
+class _SdrYamlLoader (yaml.SafeLoader):
+	pass
+
+_SdrYamlLoader.add_constructor('!fraction', _fraction_constructor)
 
 
 def _normalize_label (value: typing.Any) -> typing.Any:
@@ -176,7 +182,7 @@ class RecordingConfig(pydantic.BaseModel):
 
 	model_config = pydantic.ConfigDict(extra='forbid')
 
-	buffer_size_seconds: float = pydantic.Field(default=30.0, ge=0.0)
+	buffer_size_seconds: float = pydantic.Field(default=30.0, gt=0.0)
 	disk_flush_interval_seconds: float = pydantic.Field(default=5.0, gt=0.0)
 	audio_sample_rate: int = pydantic.Field(default=16000, gt=0)
 	audio_output_dir: str = './audio'
@@ -364,6 +370,14 @@ class BandConfig(pydantic.BaseModel):
 				f"snr_threshold_db must be > {sdr_scanner.constants.HYSTERESIS_DB} dB to allow OFF hysteresis"
 			)
 
+		# Ensure sample rate is wide enough to cover the configured band
+		band_span = self.freq_end - self.freq_start
+		if self.sample_rate < band_span:
+			raise ValueError(
+				f"sample_rate ({self.sample_rate/1e6:.3f} MHz) must be >= band span "
+				f"({band_span/1e6:.3f} MHz). Channels outside the sample rate will be aliased."
+			)
+
 		return self
 
 
@@ -433,7 +447,7 @@ def _load_raw_config (config_path: str) -> dict:
 	"""
 
 	with open(config_path, 'r') as f:
-		data = yaml.safe_load(f)
+		data = yaml.load(f, Loader=_SdrYamlLoader)
 
 	if data is None:
 		raise ValueError(f"Config file is empty: {config_path}")
@@ -510,6 +524,12 @@ def _apply_band_defaults (data: dict) -> dict:
 				continue
 
 		# No type or type not found: use band config as-is
+		if isinstance(band_type, str) and band_type.strip().upper() not in normalized_types:
+			available = ', '.join(sorted(normalized_types.keys())) or '(none)'
+			logger.warning(
+				f"Band '{band_name}' specifies type '{band_type}' which is not defined in band_defaults. "
+				f"Available types: {available}. No defaults will be inherited."
+			)
 		merged_bands[band_name] = band_config
 
 	# Return modified config with merged bands

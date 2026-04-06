@@ -50,7 +50,7 @@ def demodulate_nfm (
 				if_decimation = i
 				break
 	
-	if_rate = sample_rate / if_decimation
+	if_rate = int(round(sample_rate / if_decimation))
 
 	iq_if, state = sdr_scanner.dsp.filters.decimate_iq(
 		iq_samples,
