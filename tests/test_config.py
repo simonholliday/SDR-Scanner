@@ -63,11 +63,12 @@ class TestBandValidation:
 		with pytest.raises(pydantic.ValidationError):
 			sdr_scanner.config.validate_config(minimal_config_dict)
 
-	def test_sample_rate_too_low_raises (self, minimal_config_dict):
-		# Band span is 87.5 kHz; set sample_rate below that
+	def test_sample_rate_below_band_span_accepted (self, minimal_config_dict):
+		# Band span vs sample_rate is checked at scanner init, not config validation.
+		# Config should accept bands wider than their sample_rate.
 		minimal_config_dict["bands"]["test_nfm"]["sample_rate"] = 50000.0
-		with pytest.raises(pydantic.ValidationError):
-			sdr_scanner.config.validate_config(minimal_config_dict)
+		config = sdr_scanner.config.validate_config(minimal_config_dict)
+		assert config.bands["test_nfm"].sample_rate == 50000.0
 
 	def test_channel_width_defaults (self, app_config):
 		band = app_config.bands["test_nfm"]

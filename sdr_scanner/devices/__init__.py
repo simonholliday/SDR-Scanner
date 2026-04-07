@@ -9,10 +9,14 @@ The factory function create_device() simplifies device instantiation
 by accepting a device type string and returning the appropriate instance.
 """
 
+from __future__ import annotations
+
 import typing
 
+import sdr_scanner.devices.base
 
-def create_device (device_type: str, device_index: int = 0) -> 'sdr_scanner.devices.base.BaseDevice':
+
+def create_device (device_type: str, device_index: int = 0) -> sdr_scanner.devices.base.BaseDevice:
 	"""
 	Factory function to create SDR device instances.
 

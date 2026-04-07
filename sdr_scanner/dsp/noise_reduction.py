@@ -168,7 +168,7 @@ def apply_spectral_subtraction (
 	oversub: float = 0.7,
 	floor: float = 0.06,
 	noise_mag: numpy.ndarray | None = None,
-	noise_floor_db: float | None = None
+	adaptive_noise_estimation: bool = False
 ) -> tuple[numpy.ndarray, numpy.ndarray]:
 
 	"""
@@ -181,10 +181,13 @@ def apply_spectral_subtraction (
 	4. Apply smoothing to reduce "musical noise" artifacts
 	5. Convert back to time domain (ISTFT)
 
-	When ``noise_floor_db`` is provided (from band-wide PSD estimation), it
-	is used to classify STFT frames as noise-only more reliably than the
-	default percentile heuristic — especially important when the audio chunk
-	is mostly speech/signal and there are few truly quiet frames.
+	Two noise-frame selection strategies are available:
+	- Default (``adaptive_noise_estimation=False``): uses the 20th percentile
+	  of frame energy as the threshold.  Works well when the audio contains
+	  a mix of speech and silence.
+	- Adaptive (``adaptive_noise_estimation=True``): selects frames within
+	  3 dB of the minimum frame energy.  More reliable when the audio chunk
+	  is mostly speech/signal and there are few truly quiet frames.
 
 	Args:
 		audio: Input audio signal
@@ -192,10 +195,8 @@ def apply_spectral_subtraction (
 		oversub: Noise oversubtraction factor (>1 = more aggressive)
 		floor: Minimum gain floor to prevent complete zeroing
 		noise_mag: Pre-computed noise magnitude spectrum (optional)
-		noise_floor_db: Band-wide noise floor estimate in dB (optional).
-			When provided, frames with energy below this level (plus a
-			small margin) are used for noise estimation instead of the
-			fixed 20th percentile.
+		adaptive_noise_estimation: When True, use min-energy-based frame
+			selection instead of the fixed 20th percentile heuristic.
 
 	Returns:
 		Tuple of (denoised_audio, noise_mag) where noise_mag can be reused
@@ -234,13 +235,10 @@ def apply_spectral_subtraction (
 		# Calculate total energy per frame (sum across all frequencies)
 		frame_energy = numpy.mean(magnitude * magnitude, axis=0)
 
-		if noise_floor_db is not None and frame_energy.size > 1:
-			# Use the band-wide noise floor as a relative guide for frame
-			# classification.  The noise floor dB (from PSD analysis) and
-			# STFT frame energy are in different scales, so we can't compare
-			# them directly.  Instead we find the median frame energy (which
-			# typically corresponds to the noise level in speech-dominant
-			# blocks) and select frames within 3 dB of the minimum as noise.
+		if adaptive_noise_estimation and frame_energy.size > 1:
+			# Select frames within 3 dB of the minimum energy as noise.
+			# More reliable than the percentile heuristic when most frames
+			# contain signal rather than silence.
 			min_energy = numpy.min(frame_energy)
 			# 3 dB above the quietest frame — captures noise variation
 			# without including speech frames.

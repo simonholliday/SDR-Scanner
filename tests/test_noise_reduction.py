@@ -86,12 +86,12 @@ class TestSpectralSubtraction:
 		# noise_mag should be reused (same object)
 		assert nmag2 is nmag
 
-	def test_noise_floor_db_param (self):
-		"""noise_floor_db parameter should not crash."""
+	def test_adaptive_noise_estimation (self):
+		"""adaptive_noise_estimation parameter should not crash."""
 		rng = numpy.random.default_rng(42)
 		audio = rng.standard_normal(16000).astype(numpy.float32) * 0.1
 		denoised, _ = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
-			audio, 16000, noise_floor_db=-40.0
+			audio, 16000, adaptive_noise_estimation=True
 		)
 		assert len(denoised) == len(audio)
 

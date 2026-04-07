@@ -370,14 +370,6 @@ class BandConfig(pydantic.BaseModel):
 				f"snr_threshold_db must be > {sdr_scanner.constants.HYSTERESIS_DB} dB to allow OFF hysteresis"
 			)
 
-		# Ensure sample rate is wide enough to cover the configured band
-		band_span = self.freq_end - self.freq_start
-		if self.sample_rate < band_span:
-			raise ValueError(
-				f"sample_rate ({self.sample_rate/1e6:.3f} MHz) must be >= band span "
-				f"({band_span/1e6:.3f} MHz). Channels outside the sample rate will be aliased."
-			)
-
 		return self
 
 

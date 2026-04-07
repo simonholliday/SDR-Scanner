@@ -1278,6 +1278,8 @@ class RadioScanner:
 						recorder = self.channel_recorders.get(channel_freq)
 						if recorder:
 							recorder.append_audio(audio)
+						else:
+							logger.warning(f"Channel {channel_index}: no recorder found, audio discarded")
 
 				if turning_off:
 					self.channel_filter_zi.pop(channel_freq, None)

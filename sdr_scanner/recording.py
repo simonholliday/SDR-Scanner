@@ -349,7 +349,7 @@ class ChannelRecorder:
 			try:
 				samples, self.noise_mag = sdr_scanner.dsp.noise_reduction.apply_spectral_subtraction(
 					samples, self.audio_sample_rate, oversub=0.7, floor=0.06,
-					noise_mag=self.noise_mag, noise_floor_db=self.initial_noise_floor_db,
+					noise_mag=self.noise_mag, adaptive_noise_estimation=self.initial_noise_floor_db is not None,
 				)
 			except Exception as exc:
 				logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")
