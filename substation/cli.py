@@ -66,7 +66,7 @@ def list_bands (config_path: str) -> None:
 async def run_scanner (config_path: str, band_name: str, device_type: str, device_index: int) -> None:
 
 	"""
-	Initialize and run the SDR scanner.
+	Initialize and run the scanner.
 
 	This is the main async entry point that:
 	1. Loads configuration from file
