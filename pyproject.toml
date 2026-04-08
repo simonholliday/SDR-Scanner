@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sdr-scanner"
 dynamic = ["version"]
-description = "A versatile SDR band scanner for RTL-SDR and HackRF"
+description = "A versatile SDR band scanner for RTL-SDR, HackRF, AirSpy, and SoapySDR devices"
 authors = [
     { name = "Simon Holliday" }
 ]
@@ -21,6 +21,9 @@ dependencies = [
     "PyYAML>=6.0",
     "scipy>=1.10.0",
     "soundfile>=0.12.1",
+    # SoapySDR (for AirSpy and other devices) is a system package — install
+    # via apt (python3-soapysdr) and use --system-site-packages on the venv.
+    # See installation.txt section 4.
 ]
 
 [project.scripts]

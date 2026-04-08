@@ -5,3 +5,8 @@ config.yaml
 *.egg-info/
 audio/
 examples/audio/
+.claude/
+.vs-code/
+CLAUDE.md
+AGENT-INSTRUCTIONS.md
+README-AGENTS.md

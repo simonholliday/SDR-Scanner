@@ -293,6 +293,18 @@ class BandConfig(pydantic.BaseModel):
 		sdr_gain_db: SDR gain in dB, or 'auto' for AGC.
 			'auto' is convenient but may not be optimal. Manual gain (e.g., 20-40 dB
 			for RTL-SDR) often works better for specific scenarios.
+
+		sdr_gain_elements: Optional per-element gain mapping for devices with
+			multiple gain stages (e.g., AirSpy R2 has LNA, Mixer, VGA).
+			Element names are device-specific — check the log output at
+			startup for available elements and their ranges.
+			Mutually exclusive with sdr_gain_db — if both are set,
+			sdr_gain_elements takes priority.
+
+		sdr_device_settings: Optional device-specific settings passed through
+			SoapySDR's writeSetting() API. Used for features like bias tee
+			control, external clock configuration, or device calibration.
+			Keys and values are device-specific strings.
 	"""
 
 	model_config = pydantic.ConfigDict(extra='forbid')
@@ -308,6 +320,8 @@ class BandConfig(pydantic.BaseModel):
 	exclude_channel_indices: list[int] = pydantic.Field(default_factory=list)
 	snr_threshold_db: float = pydantic.Field(default=12.0)
 	sdr_gain_db: float | str | None = 'auto'
+	sdr_gain_elements: dict[str, float] | None = None
+	sdr_device_settings: dict[str, str] | None = None
 
 	@pydantic.field_validator('modulation', 'type', mode='before')
 	@classmethod
@@ -355,6 +369,7 @@ class BandConfig(pydantic.BaseModel):
 		- freq_end > freq_start
 		- Sets default channel_width if not specified
 		- Ensures snr_threshold_db is high enough for hysteresis to work
+		- Warns if sdr_gain_elements overrides sdr_gain_db
 		"""
 		if self.freq_start >= self.freq_end:
 			raise ValueError('freq_start must be less than freq_end')
@@ -368,6 +383,13 @@ class BandConfig(pydantic.BaseModel):
 		if self.snr_threshold_db <= sdr_scanner.constants.HYSTERESIS_DB:
 			raise ValueError(
 				f"snr_threshold_db must be > {sdr_scanner.constants.HYSTERESIS_DB} dB to allow OFF hysteresis"
+			)
+
+		# Warn if per-element gain overrides sdr_gain_db
+		if self.sdr_gain_elements is not None and self.sdr_gain_db is not None:
+			logger.info(
+				"sdr_gain_elements is set — sdr_gain_db will be ignored. "
+				"Per-element gain takes priority for fine-tuned stage control."
 			)
 
 		return self

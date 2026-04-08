@@ -167,7 +167,7 @@ Examples:
 	parser.add_argument(
 		'--device-type', '-t',
 		default='rtlsdr',
-		help='SDR device type: rtlsdr, hackrf (default: rtlsdr)'
+		help='SDR device type: rtlsdr, hackrf, airspy, airspyhf, soapy:<driver> (default: rtlsdr)'
 	)
 
 	# Device index for systems with multiple SDRs

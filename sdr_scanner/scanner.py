@@ -633,13 +633,21 @@ class RadioScanner:
 		self.sdr.sample_rate = self.sample_rate
 		self.sdr.center_freq = self.center_freq
 
-		if self.sdr_gain_db == 'auto' or self.sdr_gain_db is None:
+		# Per-element gain takes priority over overall gain for devices with
+		# multiple gain stages (e.g., AirSpy R2: LNA, Mixer, VGA).
+		if self.band_config.sdr_gain_elements and hasattr(self.sdr, 'gain_elements'):
+			self.sdr.gain_elements = self.band_config.sdr_gain_elements
+		elif self.sdr_gain_db == 'auto' or self.sdr_gain_db is None:
 			try:
 				self.sdr.gain = 'auto'
 			except Exception:
 				self.sdr.gain = None
 		else:
 			self.sdr.gain = self.sdr_gain_db
+
+		# Apply device-specific settings (bias tee, clock source, etc.)
+		if self.band_config.sdr_device_settings and hasattr(self.sdr, 'device_settings'):
+			self.sdr.device_settings = self.band_config.sdr_device_settings
 
 		serial = getattr(self.sdr, 'serial', None)
 

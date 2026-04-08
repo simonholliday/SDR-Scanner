@@ -51,18 +51,51 @@ sudo apt install -y libsndfile1 libsndfile1-dev python3-setuptools python3-dev
 # Install HackRF drivers and utilities
 sudo apt install -y libhackrf-dev hackrf
 
-4. Python Environment
+4. SoapySDR + AirSpy Support (Optional)
+----------------------------------------
+Required only if using AirSpy R2, AirSpy HF+ Discovery, or other SoapySDR-compatible devices.
+
+# Install SoapySDR core and Python bindings
+sudo apt install -y soapysdr-tools python3-soapysdr
+
+# Install device-specific SoapySDR modules (install only what you need)
+sudo apt install -y soapysdr-module-airspy      # AirSpy R2
+sudo apt install -y soapysdr-module-airspyhf    # AirSpy HF+ Discovery
+
+# If soapysdr-module-airspyhf is not available in your distro's repos
+# (e.g., Raspberry Pi OS), build from source instead:
+sudo apt install -y libairspyhf-dev libsoapysdr-dev cmake
+git clone https://github.com/pothosware/SoapyAirspyHF.git
+cd SoapyAirspyHF
+mkdir build && cd build
+cmake ..
+make
+sudo make install
+cd ../..
+
+# Verify SoapySDR can see connected devices
+SoapySDRUtil --find
+
+5. Python Environment
 ---------------------
 It is recommended to run the scanner in a dedicated virtual environment.
 
-# Create and activate a virtual environment
-python3 -m venv venv
+# If using SoapySDR devices (AirSpy, etc.), the venv MUST inherit system
+# packages so it can access the system-installed python3-soapysdr bindings:
+python3 -m venv --system-site-packages venv
+
+# If you already have an existing venv, enable system packages on it:
+# sed -i 's/include-system-site-packages = false/include-system-site-packages = true/' /path/to/venv/pyvenv.cfg
+
+# If only using RTL-SDR or HackRF (no SoapySDR), a standard venv is fine:
+# python3 -m venv venv
+
 source venv/bin/activate
 
 # Install the package in editable mode
 pip install -e .
 
-5. Verification
+6. Verification
 ---------------
 After installation, you can verify everything is working by listing the available bands:
 

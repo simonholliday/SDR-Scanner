@@ -45,6 +45,20 @@ class TestCreateDevice:
 			mock_cls = _mock_create_device(alias, "hackrf", "HackRfDevice")
 			mock_cls.assert_called_once_with(0)
 
+	def test_airspy_aliases (self):
+		for alias in ("airspy", "airspy-r2", "airspyr2"):
+			mock_cls = _mock_create_device(alias, "soapysdr", "SoapySdrDevice")
+			mock_cls.assert_called_once_with('airspy', 0)
+
+	def test_airspyhf_aliases (self):
+		for alias in ("airspyhf", "airspy-hf", "airspyhf+"):
+			mock_cls = _mock_create_device(alias, "soapysdr", "SoapySdrDevice")
+			mock_cls.assert_called_once_with('airspyhf', 0)
+
+	def test_soapy_generic_passthrough (self):
+		mock_cls = _mock_create_device("soapy:lime", "soapysdr", "SoapySdrDevice")
+		mock_cls.assert_called_once_with('lime', 0)
+
 	def test_case_insensitive (self):
 		mock_cls = _mock_create_device("RTLSDR", "rtlsdr", "RtlSdrDevice")
 		mock_cls.assert_called_once()

@@ -11,8 +11,11 @@ By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan
 ## Hardware Requirements
 To use this software, a compatible Software Defined Radio (SDR) USB device is required. The code has been specifically tested and verified with the following hardware:
 
-*   **[RTL-SDR Blog V4 and V3](https://www.rtl-sdr.com/about-rtl-sdr/)**: High-quality, low-cost receivers.
-*   **[HackRF One](https://greatscottgadgets.com/hackrf/one/)**: A wideband transceiver capable of monitoring much larger frequency spans.
+*   **[RTL-SDR Blog V4 and V3](https://www.rtl-sdr.com/about-rtl-sdr/)**: High-quality, low-cost receivers. 24 MHz - 1.7 GHz, up to 2.4 MHz sample rate.
+*   **[HackRF One](https://greatscottgadgets.com/hackrf/one/)**: A wideband transceiver capable of monitoring much larger frequency spans. 1 MHz - 6 GHz, 2-20 MHz sample rate.
+*   **[AirSpy R2](https://airspy.com/airspy-r2/)**: High-dynamic-range receiver with 12-bit ADC. 24 MHz - 1.8 GHz, 2.5/10 MHz sample rate. Requires SoapySDR (see below).
+*   **[AirSpy HF+ Discovery](https://airspy.com/airspy-hf-discovery/)**: Precision HF/VHF receiver. 0.5 kHz - 31 MHz + 60-260 MHz, up to 768 kHz bandwidth. Requires SoapySDR (see below).
+*   Any other device supported by **[SoapySDR](https://github.com/pothosware/SoapySDR)** via the `soapy:<driver>` device type.
 
 ## Key Features & Optimizations
 - **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection. The noise floor is EMA-smoothed across slices to eliminate jitter, with a warmup period that absorbs SDR hardware startup transients before detection begins.
@@ -51,7 +54,7 @@ Audio files are written to:
 
 ## Command Line
 ```bash
-sdr-scanner --band <band> [--config <path>] [--device-type rtlsdr|hackrf] [--device-index N]
+sdr-scanner --band <band> [--config <path>] [--device-type rtlsdr|hackrf|airspy|airspyhf|soapy:<driver>] [--device-index N]
 sdr-scanner --list-bands
 ```
 
@@ -104,7 +107,7 @@ See [examples/scan_demo.py](examples/scan_demo.py) for a more detailed implement
 Options:
 - `--config`, `-c`: path to config file (default `config.yaml`).
 - `--band`, `-b`: band name to scan (required unless `--list-bands`).
-- `--device-type`, `-t`: `rtlsdr` or `hackrf` (default `rtlsdr`).
+- `--device-type`, `-t`: `rtlsdr`, `hackrf`, `airspy`, `airspyhf`, or `soapy:<driver>` (default `rtlsdr`).
 - `--device-index`, `-i`: device index (default `0`).
 - `--list-bands`: list available bands and exit.
 
@@ -176,7 +179,36 @@ Per-band keys:
 - `recording_enabled`: enable recording for this band. Optional, defaults to `false` (can also be set in `band_defaults`).
 - `snr_threshold_db`: detection threshold (dB above noise floor).
 - `sdr_gain_db`: numeric or `auto`.
+- `sdr_gain_elements`: optional dict mapping gain element names to dB values for per-stage control (e.g., `{LNA: 10, MIX: 5, VGA: 12}`). Available elements are logged at startup. Takes priority over `sdr_gain_db`.
+- `sdr_device_settings`: optional dict of device-specific settings passed via SoapySDR (e.g., `{biastee: "true"}`). Available settings are logged at DEBUG level on startup.
 - `exclude_channel_indices`: 0-based indices to skip (no analysis, no recording).
+
+## SoapySDR Installation (AirSpy and other devices)
+
+AirSpy devices (and any other `soapy:<driver>` device) require SoapySDR, which is installed at the system level:
+
+```bash
+# Raspberry Pi OS / Debian
+sudo apt install -y soapysdr-tools python3-soapysdr
+sudo apt install -y soapysdr-module-airspy      # AirSpy R2
+sudo apt install -y soapysdr-module-airspyhf    # AirSpy HF+ Discovery
+
+# If soapysdr-module-airspyhf is not in your distro's repos (e.g., Raspberry Pi OS),
+# build from source instead:
+sudo apt install -y libairspyhf-dev libsoapysdr-dev cmake
+git clone https://github.com/pothosware/SoapyAirspyHF.git
+cd SoapyAirspyHF && mkdir build && cd build
+cmake .. && make && sudo make install && cd ../..
+
+# Verify SoapySDR can see connected devices
+SoapySDRUtil --find
+```
+
+The Python virtual environment **must** be created with `--system-site-packages` to access the system-installed SoapySDR bindings:
+
+```bash
+python3 -m venv --system-site-packages /home/si/venvs/sdr-scanner
+```
 
 ## Broadcast WAV (BWF) & Metadata
 Each recording captures industry-standard **Broadcast WAV (BWF)** metadata (EBU Tech 3285). This embeds technical details directly into the audio file, making it ideal for archival and automated post-processing.
@@ -194,6 +226,74 @@ If you open a recording in a professional audio tool or a BWF viewer, you will s
 | **Origination Date** | `2026-01-27` | Date the recording started |
 | **Time Reference** | `1152000` | Sample count since midnight (for precise timing) |
 
+
+## AirSpy Examples
+
+Scan PMR446 with an AirSpy R2 (higher dynamic range than RTL-SDR, with per-element gain control):
+
+```bash
+sdr-scanner --band pmr --device-type airspy --device-index 0
+```
+
+To fine-tune the AirSpy R2's gain stages for best noise figure, set per-element gains in `config.yaml` instead of a single `sdr_gain_db` value. Available element names and their ranges are logged at INFO level on startup — use those to guide your values:
+
+```yaml
+bands:
+  pmr:
+    type: PMR
+    freq_start: 446.00625e+6
+    freq_end: 446.19375e+6
+    sample_rate: 2.5e6
+    sdr_gain_elements:
+      LNA: 10     # Adjust based on ranges shown in startup log
+      MIX: 5
+      VGA: 12
+```
+
+Scan HF shortwave bands with an AirSpy HF+ Discovery:
+
+```bash
+sdr-scanner --band amateur_hf_20m --device-type airspyhf --device-index 0
+```
+
+The HF+ Discovery has a maximum bandwidth of 768 kHz, so `sample_rate` must be set accordingly:
+
+```yaml
+bands:
+  amateur_hf_20m:
+    freq_start: 14.0e+6
+    freq_end: 14.35e+6
+    channel_spacing: 3.0e+3
+    sample_rate: 768.0e+3
+    modulation: AM
+    recording_enabled: true
+    snr_threshold_db: 6.0
+    sdr_gain_db: auto
+```
+
+## Gain Tuning
+
+SDR gain controls how much the received signal is amplified before digitisation. Too little gain and weak signals are lost in the noise floor; too much and strong signals overdrive the ADC, causing distortion and spurious detections.
+
+**Simple approach (recommended starting point)**: set `sdr_gain_db` to a numeric value or `auto`. When set to a single number, SoapySDR distributes the gain across the device's internal stages automatically — this produces good results for most setups without any per-element knowledge. Start here and only move to per-element tuning if you want to squeeze out the last bit of performance.
+
+**Per-element tuning (advanced)**: devices with multiple gain stages (like the AirSpy R2) allow individual control via `sdr_gain_elements`. This can improve reception quality because the *order* of gain stages matters for noise performance:
+
+| Stage | Role | Tuning guidance |
+| :--- | :--- | :--- |
+| **LNA** (Low-Noise Amplifier) | First amplifier in the chain. Has the greatest impact on overall noise figure. | Set as high as possible without overloading from strong nearby signals. This is where sensitivity is won or lost. |
+| **Mixer** | Frequency conversion stage. | Moderate gain. Too high increases intermodulation distortion (ghost signals from mixing products of strong stations). |
+| **VGA** (Variable Gain Amplifier) | Final gain stage before the ADC. | Use to bring the overall signal level into the ADC's optimal range. Boosting here amplifies noise from earlier stages equally, so it contributes the least to sensitivity. |
+
+The general principle is: **maximise gain early in the chain** (LNA) and **minimise gain late** (VGA), within the limits of what doesn't cause overload. This keeps the signal-to-noise ratio as high as possible through the receive chain.
+
+**Practical tips**:
+- Available element names and their valid ranges are logged at INFO level on startup. Check these before setting values.
+- Start with `sdr_gain_db: auto` or a moderate overall value. Observe the noise floor and SNR values in the logs.
+- If you see false detections or distortion, reduce LNA gain first.
+- If weak signals are missed, increase LNA gain (and reduce VGA if the ADC is clipping).
+- Optimal values depend on your antenna, band, and local RF environment — a rooftop antenna in a city needs different gain from a small whip in a rural area.
+- Airband (AM, 118-137 MHz) typically needs less gain than PMR (NFM, 446 MHz) because aircraft transmitters are more powerful (5-25W) than PMR handhelds (0.5W).
 
 ## Parallel Scans (Multiple Devices)
 Run one process per device:

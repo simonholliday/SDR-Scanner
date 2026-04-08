@@ -130,6 +130,40 @@ class TestBandDefaults:
 		assert "UNKNOWN_TYPE" in caplog.text
 
 
+class TestGainElements:
+
+	def test_gain_elements_accepted (self, minimal_config_dict):
+		"""Per-element gain dict should be accepted by config validation."""
+		minimal_config_dict["bands"]["test_nfm"]["sdr_gain_elements"] = {"LNA": 10, "VGA": 12}
+		config = sdr_scanner.config.validate_config(minimal_config_dict)
+		assert config.bands["test_nfm"].sdr_gain_elements == {"LNA": 10.0, "VGA": 12.0}
+
+	def test_gain_elements_none_by_default (self, app_config):
+		"""sdr_gain_elements should be None when not specified."""
+		assert app_config.bands["test_nfm"].sdr_gain_elements is None
+
+	def test_gain_elements_overrides_gain_db_logged (self, minimal_config_dict, caplog):
+		"""When both sdr_gain_elements and sdr_gain_db are set, a log message should note the override."""
+		minimal_config_dict["bands"]["test_nfm"]["sdr_gain_elements"] = {"LNA": 10}
+		minimal_config_dict["bands"]["test_nfm"]["sdr_gain_db"] = 30
+		with caplog.at_level(logging.INFO):
+			sdr_scanner.config.validate_config(minimal_config_dict)
+		assert "sdr_gain_elements is set" in caplog.text
+
+
+class TestDeviceSettings:
+
+	def test_device_settings_accepted (self, minimal_config_dict):
+		"""Device settings dict should be accepted by config validation."""
+		minimal_config_dict["bands"]["test_nfm"]["sdr_device_settings"] = {"biastee": "true"}
+		config = sdr_scanner.config.validate_config(minimal_config_dict)
+		assert config.bands["test_nfm"].sdr_device_settings == {"biastee": "true"}
+
+	def test_device_settings_none_by_default (self, app_config):
+		"""sdr_device_settings should be None when not specified."""
+		assert app_config.bands["test_nfm"].sdr_device_settings is None
+
+
 class TestExcludeChannelIndices:
 
 	def test_valid_indices (self, minimal_config_dict):

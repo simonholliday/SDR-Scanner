@@ -69,6 +69,24 @@ bands:
     # Practical maximum sample rates:
     # - RTL-SDR Blog V4: 2.4MHz
     # - HackRF One: 16MHz
+    # - AirSpy R2: 10MHz
+    # - AirSpy HF+ Discovery: 768kHz
+    #
+    # Per-element gain control (SoapySDR devices):
+    # Some devices expose multiple gain stages that can be tuned individually
+    # for optimal noise figure. Available element names and their ranges are
+    # logged at INFO level on startup. Example for AirSpy R2:
+    #   sdr_gain_elements:
+    #     LNA: 10
+    #     MIX: 5
+    #     VGA: 12
+    # When sdr_gain_elements is set, sdr_gain_db is ignored.
+    #
+    # Device-specific settings (SoapySDR devices):
+    # Passed through to SoapySDR's writeSetting() API. Available settings
+    # are logged at DEBUG level on startup. Example:
+    #   sdr_device_settings:
+    #     biastee: "true"
 
     pmr:
         type: PMR
