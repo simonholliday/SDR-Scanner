@@ -6,14 +6,14 @@ import pytest
 import substation.constants
 import substation.scanner
 
-from iq_generators import generate_noise_iq, generate_tone_iq
+import iq_generators
 
 
 class TestPSDCalculation:
 
 	def test_noise_flat_psd (self, scanner_instance):
 		"""Gaussian noise should produce a roughly flat PSD."""
-		iq = generate_noise_iq(scanner_instance.sample_rate, 0.1)
+		iq = iq_generators.generate_noise_iq(scanner_instance.sample_rate, 0.1)
 		# Trim to expected slice size
 		iq = iq[:scanner_instance.samples_per_slice]
 		psd_db, _ = scanner_instance._calculate_psd_data(iq, include_segment_psd=False)
@@ -27,8 +27,8 @@ class TestPSDCalculation:
 		# Place a tone at the first channel frequency
 		ch_freq = sc.channels[0]
 		offset_hz = ch_freq - sc.center_freq
-		tone = generate_tone_iq(offset_hz, sc.sample_rate, 0.1, amplitude=1.0)
-		noise = generate_noise_iq(sc.sample_rate, 0.1, power_db=-50)
+		tone = iq_generators.generate_tone_iq(offset_hz, sc.sample_rate, 0.1, amplitude=1.0)
+		noise = iq_generators.generate_noise_iq(sc.sample_rate, 0.1, power_db=-50)
 		iq = (tone + noise)[:sc.samples_per_slice]
 		psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 		# The peak should be significantly above the median
@@ -40,7 +40,7 @@ class TestNoiseFloorEstimation:
 	def test_with_noise_mask (self, scanner_instance):
 		"""Noise floor should be estimated from gap bins."""
 		sc = scanner_instance
-		iq = generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
+		iq = iq_generators.generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
 		psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 		nf = sc._estimate_noise_floor(psd_db)
 		assert isinstance(nf, (float, numpy.floating))
@@ -48,7 +48,7 @@ class TestNoiseFloorEstimation:
 	def test_fallback_without_mask (self, scanner_instance):
 		"""Without noise mask, falls back to 25th percentile."""
 		sc = scanner_instance
-		iq = generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
+		iq = iq_generators.generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
 		psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 		# Temporarily remove noise mask
 		saved_mask = sc.noise_mask
@@ -68,7 +68,7 @@ class TestEMASmoothing:
 
 		floors = []
 		for _ in range(20):
-			iq = generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
+			iq = iq_generators.generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
 			psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 			raw_nf = sc._estimate_noise_floor(psd_db)
 
@@ -92,8 +92,8 @@ class TestChannelPower:
 		sc = scanner_instance
 		ch_freq = sc.channels[0]
 		offset_hz = ch_freq - sc.center_freq
-		tone = generate_tone_iq(offset_hz, sc.sample_rate, 0.1, amplitude=1.0)
-		noise = generate_noise_iq(sc.sample_rate, 0.1, power_db=-50)
+		tone = iq_generators.generate_tone_iq(offset_hz, sc.sample_rate, 0.1, amplitude=1.0)
+		noise = iq_generators.generate_noise_iq(sc.sample_rate, 0.1, power_db=-50)
 		iq = (tone + noise)[:sc.samples_per_slice]
 		psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 		nf = sc._estimate_noise_floor(psd_db)
@@ -106,7 +106,7 @@ class TestChannelPower:
 	def test_noise_only_below_threshold (self, scanner_instance):
 		"""With only noise, all channels should be below threshold."""
 		sc = scanner_instance
-		iq = generate_noise_iq(sc.sample_rate, 0.1, power_db=-20)[:sc.samples_per_slice]
+		iq = iq_generators.generate_noise_iq(sc.sample_rate, 0.1, power_db=-20)[:sc.samples_per_slice]
 		psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 		nf = sc._estimate_noise_floor(psd_db)
 		powers = sc._get_channel_powers(psd_db)
@@ -116,7 +116,7 @@ class TestChannelPower:
 	def test_vectorized_matches_individual (self, scanner_instance):
 		"""Vectorized channel powers should match individual computation."""
 		sc = scanner_instance
-		iq = generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
+		iq = iq_generators.generate_noise_iq(sc.sample_rate, 0.1)[:sc.samples_per_slice]
 		psd_db, _ = sc._calculate_psd_data(iq, include_segment_psd=False)
 		batch_powers = sc._get_channel_powers(psd_db)
 		for i, ch_freq in enumerate(sc.channels):

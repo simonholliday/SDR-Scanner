@@ -41,10 +41,10 @@ def _fraction_constructor (loader: yaml.SafeLoader, node: yaml.nodes.ScalarNode)
 
 
 # Custom loader subclass so the !fraction tag doesn't mutate the global SafeLoader.
-class _SdrYamlLoader (yaml.SafeLoader):
+class _YamlLoader (yaml.SafeLoader):
 	pass
 
-_SdrYamlLoader.add_constructor('!fraction', _fraction_constructor)
+_YamlLoader.add_constructor('!fraction', _fraction_constructor)
 
 
 def _normalize_label (value: typing.Any) -> typing.Any:
@@ -461,7 +461,7 @@ def _load_raw_config (config_path: str) -> dict:
 	"""
 
 	with open(config_path, 'r') as f:
-		data = yaml.load(f, Loader=_SdrYamlLoader)
+		data = yaml.load(f, Loader=_YamlLoader)
 
 	if data is None:
 		raise ValueError(f"Config file is empty: {config_path}")

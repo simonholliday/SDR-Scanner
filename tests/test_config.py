@@ -31,7 +31,7 @@ class TestYamlLoading:
 		content = "value: !fraction 25000/3\n"
 		path = tmp_path / "frac.yaml"
 		path.write_text(content)
-		data = yaml.load(path.read_text(), Loader=substation.config._SdrYamlLoader)
+		data = yaml.load(path.read_text(), Loader=substation.config._YamlLoader)
 		assert data["value"] == fractions.Fraction(25000, 3)
 
 	def test_empty_yaml_raises (self, tmp_path):

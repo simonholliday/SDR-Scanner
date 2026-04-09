@@ -38,8 +38,8 @@ recording:
     audio_output_dir: "./audio"
 
     # Linear fade in/out durations in milliseconds
-    fade_in_ms: 50
-    fade_out_ms: 150
+    fade_in_ms: 15
+    fade_out_ms: 50
 
     # Soft limiter drive for post-processing; 1.5–3.0 is typical (higher = stronger limiting)
     soft_limit_drive: 1.25

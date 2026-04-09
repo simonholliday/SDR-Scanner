@@ -32,7 +32,7 @@ class RadioScanner:
 	to prevent rapid state toggling when signals hover near the threshold.
 	"""
 
-	def __init__ (self, config_path:str='config.yaml', band_name:str='pmr', device_type:str='rtlsdr', device_index:int=0, config:typing.Any|None=None) -> None:
+	def __init__ (self, config_path: str = 'config.yaml', band_name: str = 'pmr', device_type: str = 'rtlsdr', device_index: int = 0, config: typing.Any | None = None) -> None:
 
 		"""
 		Initialize the scanner with configuration
@@ -631,6 +631,13 @@ class RadioScanner:
 
 		self.sdr = substation.devices.create_device(self.device_type, self.device_index)
 		self.sdr.sample_rate = self.sample_rate
+
+		# Use the actual rate the device applied (may differ from requested
+		# for devices with discrete supported rates, e.g., AirSpy HF+).
+		if self.sdr.sample_rate != self.sample_rate:
+			logger.info(f"Using device sample rate: {self.sdr.sample_rate/1e6:.3f} MHz (requested {self.sample_rate/1e6:.3f} MHz)")
+			self.sample_rate = self.sdr.sample_rate
+
 		self.sdr.center_freq = self.center_freq
 
 		# Per-element gain takes priority over overall gain for devices with
@@ -767,7 +774,7 @@ class RadioScanner:
 
 		return psd_welch_db, segment_psds_db
 
-	def _find_transition_index (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, turning_on: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None) -> int:
+	def _find_transition_index (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, turning_on: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None) -> int:
 
 		"""
 		Find the sample index within a chunk where a channel turns ON or OFF.
@@ -837,7 +844,7 @@ class RadioScanner:
 			end = last + 1 + pad
 			return audio[:end], pad
 
-	def _prepare_channel_transition (self, samples:numpy.typing.NDArray[numpy.complex64], channel_freq:float, channel_index:int, snr_db: float, is_active:bool, current_state:bool, segment_psd:list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None, loop:asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
+	def _prepare_channel_transition (self, samples: numpy.typing.NDArray[numpy.complex64], channel_freq: float, channel_index: int, snr_db: float, is_active: bool, current_state: bool, segment_psd: list[numpy.typing.NDArray[numpy.float64]] | None, segment_noise_floors: list[float] | None, loop: asyncio.AbstractEventLoop) -> tuple[int, int, int, bool, bool]:
 
 		"""
 		Compute trim boundaries and update state for a channel transition.
@@ -1042,7 +1049,7 @@ class RadioScanner:
 
 		return filtered
 
-	def _start_channel_recording (self, channel_freq:float, channel_index:int, snr_db:float, loop:asyncio.AbstractEventLoop) -> None:
+	def _start_channel_recording (self, channel_freq: float, channel_index: int, snr_db: float, loop: asyncio.AbstractEventLoop) -> None:
 
 		"""
 		Start recording a channel
@@ -1287,7 +1294,7 @@ class RadioScanner:
 						if recorder:
 							recorder.append_audio(audio)
 						else:
-							logger.warning(f"Channel {channel_index}: no recorder found, audio discarded")
+							logger.warning(f"Channel {idx}: no recorder found, audio discarded")
 
 				if turning_off:
 					self.channel_filter_zi.pop(channel_freq, None)

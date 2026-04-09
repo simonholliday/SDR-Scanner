@@ -76,10 +76,19 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 		self._sample_rate: float | None = None
 		self._center_freq: float | None = None
 		self._gain: float | str | None = None
+		self._gain_elements: dict[str, float] | None = None
+		self._device_settings: dict[str, str] | None = None
 
 		# Stream management
 		self._stream: typing.Any = None
 		self._stream_format: str | None = None
+
+		# IQ normalisation scale factor.  Some SoapySDR modules (notably
+		# SoapyAirspyHF) deliver CF32 samples at a much smaller scale than
+		# the expected [-1, 1] range.  This factor is computed from a
+		# calibration block at the start of streaming and applied to every
+		# subsequent sample block.
+		self._iq_scale: float = 1.0
 
 		# Reader thread control
 		self._reader_thread: threading.Thread | None = None
@@ -141,10 +150,16 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 			logger.info(f"Antennas: {', '.join(antennas)}")
 
 		# Stream formats (for debugging resolution issues)
+		# getNativeStreamFormat requires a mutable fullScale output parameter
+		# in the SoapySDR Python bindings.
 
-		native_fmt, native_fullscale = self._device.getNativeStreamFormat(self._soapy.SOAPY_SDR_RX, 0)
-		supported_fmts = self._device.getStreamFormats(self._soapy.SOAPY_SDR_RX, 0)
-		logger.info(f"Native format: {native_fmt} (full scale: {native_fullscale:.0f}), supported: {', '.join(supported_fmts)}")
+		try:
+			native_fmt = self._device.getNativeStreamFormat(self._soapy.SOAPY_SDR_RX, 0, [0.0])
+			supported_fmts = self._device.getStreamFormats(self._soapy.SOAPY_SDR_RX, 0)
+			logger.info(f"Native format: {native_fmt}, supported: {', '.join(supported_fmts)}")
+		except TypeError:
+			supported_fmts = self._device.getStreamFormats(self._soapy.SOAPY_SDR_RX, 0)
+			logger.info(f"Supported formats: {', '.join(supported_fmts)}")
 
 		# Device-specific settings (bias tee, clock source, etc.)
 
@@ -161,7 +176,36 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 
 	@sample_rate.setter
 	def sample_rate (self, value: float) -> None:
-		"""Set the sample rate in Hz."""
+
+		"""
+		Set the sample rate in Hz.
+
+		After setting, reads back the actual rate the device applied.
+		Some devices only support discrete rates and will round to the
+		nearest supported value. If the actual rate differs from the
+		requested rate, a warning is logged — this matters because the
+		scanner uses the sample rate for all frequency calculations.
+		"""
+
+		# Check if the requested rate matches a supported rate.
+		# Some devices (e.g., AirSpy R2) only support discrete rates and
+		# may silently round to the nearest one without reporting the change.
+
+		supported = self._device.listSampleRates(self._soapy.SOAPY_SDR_RX, 0)
+
+		if supported:
+
+			# Find the closest supported rate
+			closest = min(supported, key=lambda r: abs(r - value))
+
+			if abs(closest - value) > 1.0:
+				logger.warning(
+					f"Requested sample rate {value/1e6:.3f} MHz is not supported by this device. "
+					f"Using nearest supported rate: {closest/1e6:.3f} MHz. "
+					f"Supported: {', '.join(f'{r/1e6:.3f}' for r in supported)} MHz."
+				)
+				value = closest
+
 		self._device.setSampleRate(self._soapy.SOAPY_SDR_RX, 0, value)
 		self._sample_rate = value
 
@@ -217,7 +261,7 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 	@property
 	def gain_elements (self) -> dict[str, float] | None:
 		"""Get the current per-element gain settings, or None if not set individually."""
-		return self._gain_elements if hasattr(self, '_gain_elements') else None
+		return self._gain_elements
 
 	@gain_elements.setter
 	def gain_elements (self, value: dict[str, float]) -> None:
@@ -259,7 +303,7 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 	@property
 	def device_settings (self) -> dict[str, str] | None:
 		"""Get the currently applied device-specific settings."""
-		return self._device_settings if hasattr(self, '_device_settings') else None
+		return self._device_settings
 
 	@device_settings.setter
 	def device_settings (self, value: dict[str, str]) -> None:
@@ -305,9 +349,92 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 			return self._soapy.SOAPY_SDR_CS16
 
 		# Last resort — use whatever the device offers natively
-		native_fmt, _ = self._device.getNativeStreamFormat(self._soapy.SOAPY_SDR_RX, 0)
+		native_fmt = self._device.getNativeStreamFormat(self._soapy.SOAPY_SDR_RX, 0, [0.0])
 		logger.warning(f"Neither CF32 nor CS16 available. Using native format: {native_fmt}")
 		return native_fmt
+
+	def _calibrate_iq_scale (self, stream: typing.Any, stream_format: str) -> float:
+
+		"""
+		Measure the IQ sample scale from initial blocks and return a
+		normalisation factor.
+
+		Some SoapySDR modules deliver CF32 samples at a much smaller
+		scale than the expected [-1, 1] range (e.g., AirSpy HF+ peaks
+		around 0.001–0.005).  This method reads warmup blocks and
+		measures the median RMS across blocks to determine the typical
+		noise floor level.
+
+		Using median RMS rather than peak amplitude makes the measurement
+		robust against transient strong signals that may be present
+		during calibration — a strong signal shifts the peak drastically
+		but barely moves the median.
+
+		The target is to bring the noise floor RMS to ~0.01 (typical for
+		RTL-SDR), which leaves ample headroom for signals above the noise.
+
+		Returns 1.0 if samples are already in a sensible range.
+		"""
+
+		is_cs16 = (stream_format == self._soapy.SOAPY_SDR_CS16)
+
+		if is_cs16:
+			buf = numpy.empty(65536 * 2, dtype=numpy.int16)
+		else:
+			buf = numpy.empty(65536, dtype=numpy.complex64)
+
+		rms_values = []
+
+		for _ in range(20):
+
+			sr = self._device.readStream(stream, [buf], 65536, timeoutUs=500000)
+
+			if sr.ret > 0:
+
+				if is_cs16:
+					samples = self._convert_cs16_to_complex64(buf, sr.ret)
+				else:
+					samples = buf[:sr.ret]
+
+				block_rms = float(numpy.sqrt(numpy.mean(numpy.abs(samples) ** 2)))
+				rms_values.append(block_rms)
+
+				if len(rms_values) >= 10:
+					break
+
+		if not rms_values:
+			logger.warning("IQ calibration: no samples received, using scale factor 1.0")
+			return 1.0
+
+		median_rms = float(numpy.median(rms_values))
+
+		# Log the gain context so the normalisation is traceable
+		try:
+			overall_gain = self._device.getGain(self._soapy.SOAPY_SDR_RX, 0)
+			logger.info(f"IQ calibration: device overall gain {overall_gain:.1f} dB, median RMS {median_rms:.6f}")
+		except Exception:
+			pass
+
+		if median_rms < 1e-10:
+			logger.warning("IQ calibration: signal too weak to measure, using scale factor 1.0")
+			return 1.0
+
+		if median_rms > 0.001:
+			# Samples are large enough for the demodulator to work correctly.
+			# No normalisation needed — avoids overdriving the audio output.
+			# RTL-SDR typically produces RMS ~0.01-0.05; values above 0.001
+			# are well within float32 precision and demodulator range.
+			logger.info(f"IQ sample scale: no normalisation needed (median RMS {median_rms:.6f})")
+			return 1.0
+
+		# Samples are very small (e.g., AirSpy HF+ with attenuation).
+		# Scale so that the median noise floor RMS maps to ~0.001, which is
+		# the minimum usable level without losing demodulated audio to
+		# floating-point granularity.
+		target_rms = 0.001
+		scale = target_rms / median_rms
+		logger.info(f"IQ sample scale: median RMS {median_rms:.6f} — applying {scale:.1f}x normalisation")
+		return scale
 
 	def _convert_cs16_to_complex64 (self, buf: numpy.ndarray, count: int) -> numpy.typing.NDArray[numpy.complex64]:
 
@@ -387,6 +514,12 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 		self._stream = self._device.setupStream(self._soapy.SOAPY_SDR_RX, self._stream_format)
 		self._device.activateStream(self._stream)
 
+		# Calibrate IQ scale from initial samples.  Some devices (e.g.,
+		# AirSpy HF+) deliver CF32 at a much smaller scale than [-1, 1].
+		# We read a few blocks, measure peak amplitude, and compute a
+		# scale factor that brings the peak to ~0.5 (leaving headroom).
+		self._iq_scale = self._calibrate_iq_scale(self._stream, self._stream_format)
+
 		self._stop_event.clear()
 		self._rx_buffer = numpy.array([], dtype=numpy.complex64)
 
@@ -394,6 +527,7 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 		stream = self._stream
 		stream_format = self._stream_format
 		is_cs16 = (stream_format == self._soapy.SOAPY_SDR_CS16)
+		iq_scale = self._iq_scale
 
 		def _reader_loop () -> None:
 
@@ -431,6 +565,10 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 						samples = self._convert_cs16_to_complex64(buf, sr.ret)
 					else:
 						samples = buf[:sr.ret].copy()
+
+					# Apply IQ normalisation (no-op when scale is 1.0)
+					if iq_scale != 1.0:
+						samples *= iq_scale
 
 					self._buffer_samples(samples, num_samples, callback)
 
@@ -533,8 +671,8 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 
 		try:
 			self.cancel_read_async()
-		except Exception:
-			pass
+		except Exception as exc:
+			logger.debug(f"Error cancelling async read during close: {exc}")
 
 		if self._stream is not None:
 

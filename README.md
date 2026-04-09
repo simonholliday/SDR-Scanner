@@ -17,6 +17,31 @@ To use this software, a compatible Software Defined Radio (SDR) USB device is re
 *   **[AirSpy HF+ Discovery](https://airspy.com/airspy-hf-discovery/)**: Precision HF/VHF receiver. 0.5 kHz - 31 MHz + 60-260 MHz, up to 768 kHz bandwidth. Requires SoapySDR (see below).
 *   Any other device supported by **[SoapySDR](https://github.com/pothosware/SoapySDR)** via the `soapy:<driver>` device type.
 
+### Device Characteristics
+
+Different SDR devices have very different capabilities, and settings that work well on one device may need adjusting on another. Understanding these differences helps you get the best results.
+
+| | RTL-SDR Blog V4 | HackRF One | AirSpy R2 | AirSpy HF+ Discovery |
+| :--- | :--- | :--- | :--- | :--- |
+| **Frequency range** | 24 MHz - 1.7 GHz | 1 MHz - 6 GHz | 24 MHz - 1.8 GHz | 0.5 kHz - 31 MHz, 60-260 MHz |
+| **Max bandwidth** | 2.4 MHz | 20 MHz | 10 MHz | 768 kHz |
+| **ADC resolution** | 8-bit | 8-bit | 12-bit (16-bit effective) | 18-bit |
+| **Sensitivity** | Good | Moderate | Very good | Excellent (HF specialist) |
+| **AGC** | Hardware AGC | No AGC | Via SoapySDR | Hardware AGC (multi-loop) |
+| **Gain stages** | Single (auto or manual) | LNA + VGA (manual only) | LNA + Mixer + VGA | LNA (on/off) + RF attenuator |
+| **Best for** | General VHF/UHF, low cost | Wideband monitoring | High-quality VHF/UHF | HF and VHF precision |
+| **Sample rates** | Up to 2.4 MHz | 2-20 MHz | 2.5 or 10 MHz | 0.192-0.912 MHz (discrete) |
+
+**Key practical differences:**
+
+- **Sensitivity and SNR thresholds**: Higher-sensitivity devices (AirSpy HF+, AirSpy R2) detect weaker signals than the RTL-SDR. This means an `snr_threshold_db` that works well on RTL-SDR (e.g., 4.5 dB) may trigger on too many weak/noisy signals on an AirSpy. Consider raising the threshold to 6-10 dB for higher-sensitivity devices.
+
+- **Sample rates**: The AirSpy HF+ Discovery only supports specific discrete sample rates (0.192, 0.228, 0.384, 0.456, 0.650, 0.768, 0.912 MHz). If you request an unsupported rate, the device will use the nearest supported rate and a warning will be logged. Always check the supported rates in the startup log and set `sample_rate` accordingly.
+
+- **Gain architecture**: Each device has a different gain structure. The HackRF has no automatic gain control — it will warn and set sensible defaults if you use `sdr_gain_db: auto`. The AirSpy HF+ Discovery has an RF attenuator (negative dB range) rather than a conventional gain amplifier. See the [Gain Tuning](#gain-tuning) section for details.
+
+- **Band definitions**: Because of these differences, you may want separate band entries for different devices. For example, `air_civil_bristol` (1.024 MHz, threshold 4.5 dB) for RTL-SDR and `air_civil_bristol_airspyhf` (0.912 MHz, threshold 6-8 dB) for the AirSpy HF+.
+
 ## Key Features & Optimizations
 - **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection. The noise floor is EMA-smoothed across slices to eliminate jitter, with a warmup period that absorbs SDR hardware startup transients before detection begins.
 - **Parallel Multi-Channel Recording**: Simultaneously detects and records all active channels in a band - unlike traditional handheld scanners which only play one channel at a time.
@@ -287,11 +312,42 @@ SDR gain controls how much the received signal is amplified before digitisation.
 
 The general principle is: **maximise gain early in the chain** (LNA) and **minimise gain late** (VGA), within the limits of what doesn't cause overload. This keeps the signal-to-noise ratio as high as possible through the receive chain.
 
-**Practical tips**:
-- Available element names and their valid ranges are logged at INFO level on startup. Check these before setting values.
-- Start with `sdr_gain_db: auto` or a moderate overall value. Observe the noise floor and SNR values in the logs.
-- If you see false detections or distortion, reduce LNA gain first.
-- If weak signals are missed, increase LNA gain (and reduce VGA if the ADC is clipping).
+**Device-specific gain notes**:
+
+*RTL-SDR*: Simple single-stage gain. `sdr_gain_db: auto` enables hardware AGC which works well for most bands. Manual values of 20-40 dB are typical.
+
+*HackRF One*: No hardware AGC — `sdr_gain_db: auto` will set sensible defaults (LNA=32, VGA=30) and log a warning. For manual control, the value is clamped to hardware step sizes (LNA: 0-40 in 8 dB steps, VGA: 0-62 in 2 dB steps).
+
+*AirSpy R2*: Three gain stages (LNA, Mixer, VGA). Start with `sdr_gain_db: auto` or a moderate overall value. For per-element control, maximise LNA first, set Mixer moderate, and use VGA to fine-tune.
+
+*AirSpy HF+ Discovery*: Has an unusual gain architecture — the RF element is an **attenuator** (range -48 to 0 dB, where 0 means no attenuation) and the LNA is a simple on/off (0 or 6 dB). The `sdr_gain_db: auto` mode engages the device's built-in multi-loop AGC, which is a good starting point. For manual control:
+
+```yaml
+sdr_gain_elements:
+  LNA: 6       # LNA on (maximum sensitivity)
+  RF: 0        # No attenuation (maximum signal)
+```
+
+If you're getting too many false triggers on weak signals, you can add attenuation:
+
+```yaml
+sdr_gain_elements:
+  LNA: 6
+  RF: -10      # 10 dB attenuation — reduces noise triggers
+```
+
+**SNR threshold tuning**:
+
+The `snr_threshold_db` setting controls how far above the noise floor a signal must be before it's detected. The right value depends on your device's sensitivity:
+
+- **RTL-SDR**: 4-5 dB works well — the 8-bit ADC limits sensitivity naturally.
+- **AirSpy R2 / HF+ Discovery**: Start at 6-8 dB. These devices see signals the RTL-SDR can't, so a higher threshold filters out weak transmissions that would produce noisy recordings.
+- If you're getting recordings that are mostly noise, raise the threshold by 1-2 dB at a time.
+- If you're missing transmissions you can hear on a handheld scanner, lower it.
+- The OFF threshold is always 3 dB below the ON threshold (hysteresis) to prevent rapid toggling.
+
+**General tips**:
+- Available gain element names and their valid ranges are logged at INFO level on startup. Check these before setting values.
 - Optimal values depend on your antenna, band, and local RF environment — a rooftop antenna in a city needs different gain from a small whip in a rural area.
 - Airband (AM, 118-137 MHz) typically needs less gain than PMR (NFM, 446 MHz) because aircraft transmitters are more powerful (5-25W) than PMR handhelds (0.5W).
 

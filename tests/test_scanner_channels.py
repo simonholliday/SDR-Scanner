@@ -8,7 +8,7 @@ import pytest
 import substation.config
 import substation.scanner
 
-from iq_generators import generate_tone_iq, generate_noise_iq
+import iq_generators
 
 
 class TestCalculateChannels:
@@ -67,8 +67,8 @@ class TestChannelExtraction:
 		sc._precompute_fft_params()
 		ch_freq = sc.channels[0]
 		offset_hz = ch_freq - sc.center_freq
-		tone = generate_tone_iq(offset_hz, sc.sample_rate, 0.05, amplitude=0.5)
-		noise = generate_noise_iq(sc.sample_rate, 0.05, power_db=-40)
+		tone = iq_generators.generate_tone_iq(offset_hz, sc.sample_rate, 0.05, amplitude=0.5)
+		noise = iq_generators.generate_noise_iq(sc.sample_rate, 0.05, power_db=-40)
 		iq = (tone + noise)[:sc.samples_per_slice].astype(numpy.complex64)
 		extracted = sc._extract_channel_iq(iq, ch_freq)
 		# Extracted signal should have significant energy (the tone was shifted to baseband)
@@ -81,7 +81,7 @@ class TestChannelExtraction:
 		ch_freq = sc.channels[0]
 		offset_hz = ch_freq - sc.center_freq
 		n = sc.samples_per_slice * 2
-		tone = generate_tone_iq(offset_hz, sc.sample_rate, n / sc.sample_rate, amplitude=0.5)
+		tone = iq_generators.generate_tone_iq(offset_hz, sc.sample_rate, n / sc.sample_rate, amplitude=0.5)
 		block1 = tone[:sc.samples_per_slice].astype(numpy.complex64)
 		block2 = tone[sc.samples_per_slice:n].astype(numpy.complex64)
 

@@ -6,7 +6,7 @@ import scipy.fft
 
 import substation.dsp.demodulation
 
-from iq_generators import generate_am_iq, generate_fm_iq
+import iq_generators
 
 
 def _dominant_freq (audio: numpy.ndarray, sample_rate: int) -> float:
@@ -26,7 +26,7 @@ class TestNFMDemodulation:
 		audio_rate = 16000
 		audio_freq = 1000.0
 		deviation = 2500.0
-		iq = generate_fm_iq(audio_freq, deviation, sr, 0.1)
+		iq = iq_generators.generate_fm_iq(audio_freq, deviation, sr, 0.1)
 		audio, state = substation.dsp.demodulation.demodulate_nfm(iq, sr, audio_rate)
 		assert len(audio) > 0
 		# Skip the first 20% to avoid filter transients
@@ -38,7 +38,7 @@ class TestNFMDemodulation:
 		"""Two consecutive blocks produce continuous output."""
 		sr = 1_024_000
 		audio_rate = 16000
-		iq = generate_fm_iq(1000.0, 2500.0, sr, 0.2)
+		iq = iq_generators.generate_fm_iq(1000.0, 2500.0, sr, 0.2)
 		half = len(iq) // 2
 
 		state = None
@@ -60,7 +60,7 @@ class TestNFMDemodulation:
 		assert len(audio) == 0
 
 	def test_output_dtype (self):
-		iq = generate_fm_iq(1000.0, 2500.0, 1_024_000, 0.05)
+		iq = iq_generators.generate_fm_iq(1000.0, 2500.0, 1_024_000, 0.05)
 		audio, _ = substation.dsp.demodulation.demodulate_nfm(iq, 1_024_000, 16000)
 		assert audio.dtype == numpy.float32
 
@@ -72,7 +72,7 @@ class TestAMDemodulation:
 		sr = 1_024_000
 		audio_rate = 16000
 		audio_freq = 1000.0
-		iq = generate_am_iq(audio_freq, 0.8, sr, 0.1)
+		iq = iq_generators.generate_am_iq(audio_freq, 0.8, sr, 0.1)
 		audio, state = substation.dsp.demodulation.demodulate_am(iq, sr, audio_rate)
 		assert len(audio) > 0
 		settle = len(audio) // 5
@@ -87,7 +87,7 @@ class TestAMDemodulation:
 
 	def test_output_range (self):
 		"""AM output should be within [-1, 1] after AGC and clipping."""
-		iq = generate_am_iq(1000.0, 0.8, 1_024_000, 0.1)
+		iq = iq_generators.generate_am_iq(1000.0, 0.8, 1_024_000, 0.1)
 		audio, _ = substation.dsp.demodulation.demodulate_am(iq, 1_024_000, 16000)
 		assert numpy.all(audio >= -1.0)
 		assert numpy.all(audio <= 1.0)

@@ -54,6 +54,9 @@ def _make_mock_device () -> unittest.mock.MagicMock:
 	device.getStreamFormats.return_value = ['CF32', 'CS16']
 	device.getSettingInfo.return_value = []
 
+	# Sample rate readback — echo back whatever was requested
+	device.getSampleRate.return_value = 10e6
+
 	# Stream setup
 	device.setupStream.return_value = 'mock_stream'
 	device.getStreamMTU.return_value = 65536

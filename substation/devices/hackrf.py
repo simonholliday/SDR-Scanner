@@ -255,7 +255,9 @@ class HackRfDevice (substation.devices.base.BaseDevice):
 			self._call_safe('set_lna_gain', lna_gain)
 			self._call_safe('set_vga_gain', vga_gain)
 			if lna_gain != gain_val or vga_gain != gain_val:
-				logger.info(f"HackRF gain clamped: LNA={lna_gain} dB (8 dB steps, max 40), VGA={vga_gain} dB (2 dB steps, max 62)")
+				logger.info(f"HackRF gain adjusted from {gain_val} dB: LNA={lna_gain} dB (8 dB steps, max 40), VGA={vga_gain} dB (2 dB steps, max 62)")
+			else:
+				logger.info(f"HackRF gain: LNA={lna_gain} dB, VGA={vga_gain} dB")
 
 	def read_samples_async (self, callback: typing.Callable, num_samples: int) -> None:
 		"""
@@ -313,8 +315,8 @@ class HackRfDevice (substation.devices.base.BaseDevice):
 	def close (self) -> None:
 		try:
 			self.cancel_read_async()
-		except Exception:
-			pass
+		except Exception as exc:
+			logger.debug(f"Error cancelling async read during close: {exc}")
 		self._call_safe('close')
 
 		if self._initialized_library and hasattr(self._module, 'pyhackrf_exit'):
