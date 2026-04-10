@@ -2,6 +2,7 @@
 Demodulation functions for various modulation types
 """
 
+import functools
 import typing
 
 import numpy
@@ -11,6 +12,58 @@ import scipy.signal
 
 import substation.constants
 import substation.dsp.filters
+
+
+def _apply_voice_agc (
+	audio: numpy.typing.NDArray[numpy.float32],
+	audio_sample_rate: int,
+	state: dict,
+	state_prefix: str,
+) -> numpy.typing.NDArray[numpy.float32]:
+
+	"""
+	Vectorised AGC for voice-band audio.
+
+	Smooths a peak-following envelope into a slow level estimate, then
+	divides the audio by it.  The level estimate has a fast attack
+	(catches transients) and slow release (avoids "pumping").  Cross-block
+	continuity is preserved by blending the previous block's final level
+	into the start of the current block over `attack_samples` samples.
+
+	Shared between the AM and SSB demodulators because both produce a
+	real audio envelope with similar amplitude variation characteristics.
+	The state_prefix lets each caller keep its own AGC level so changing
+	the band's modulation at runtime doesn't inherit stale state.
+	"""
+
+	if len(audio) == 0:
+		return audio
+
+	env = numpy.abs(audio)
+	attack_ms = substation.constants.AM_AGC_ATTACK_MS
+	release_ms = substation.constants.AM_AGC_RELEASE_MS
+	floor = substation.constants.AM_AGC_FLOOR
+
+	attack_samples = max(1, int(audio_sample_rate * (attack_ms / 1000.0)))
+	release_samples = max(1, int(audio_sample_rate * (release_ms / 1000.0)))
+
+	peak_env = scipy.ndimage.maximum_filter1d(env, size=attack_samples, mode='nearest')
+	smooth_env = scipy.ndimage.uniform_filter1d(peak_env, size=release_samples, mode='nearest')
+	level_arr = numpy.maximum(smooth_env, floor)
+
+	level_key = state_prefix + 'agc_level'
+	prev_level = state.get(level_key)
+
+	if prev_level is not None and len(level_arr) > 0:
+		blend_len = min(attack_samples, len(level_arr))
+		blend = numpy.linspace(0.0, 1.0, blend_len, dtype=numpy.float32)
+		level_arr[:blend_len] = prev_level * (1.0 - blend) + level_arr[:blend_len] * blend
+
+	output = (audio / level_arr).astype(numpy.float32)
+	state[level_key] = float(level_arr[-1]) if len(level_arr) > 0 else floor
+
+	output *= substation.constants.AM_OUTPUT_GAIN
+	return numpy.clip(output, -1.0, 1.0).astype(numpy.float32, copy=False)
 
 def demodulate_nfm (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
@@ -160,37 +213,208 @@ def demodulate_am (
 		zi=state['am_dc_zi']
 	)
 
-	# 4. Vectorized AGC.
-	env = numpy.abs(audio)
-	attack_ms = substation.constants.AM_AGC_ATTACK_MS
-	release_ms = substation.constants.AM_AGC_RELEASE_MS
-	floor = substation.constants.AM_AGC_FLOOR
+	# 4. Vectorised AGC (shared helper, also used by demodulate_ssb).
+	output = _apply_voice_agc(audio, audio_sample_rate, state, state_prefix='am_')
 
-	attack_samples = max(1, int(audio_sample_rate * (attack_ms / 1000.0)))
-	release_samples = max(1, int(audio_sample_rate * (release_ms / 1000.0)))
-
-	peak_env = scipy.ndimage.maximum_filter1d(env, size=attack_samples, mode='nearest')
-	smooth_env = scipy.ndimage.uniform_filter1d(peak_env, size=release_samples, mode='nearest')
-	level_arr = numpy.maximum(smooth_env, floor)
-
-	prev_level = state.get('am_agc_level')
-	if prev_level is not None and len(level_arr) > 0:
-		blend_len = min(attack_samples, len(level_arr))
-		blend = numpy.linspace(0.0, 1.0, blend_len, dtype=numpy.float32)
-		level_arr[:blend_len] = prev_level * (1.0 - blend) + level_arr[:blend_len] * blend
-
-	output = (audio / level_arr).astype(numpy.float32)
-	state['am_agc_level'] = float(level_arr[-1]) if len(level_arr) > 0 else floor
-	output *= substation.constants.AM_OUTPUT_GAIN
-
-	output = numpy.clip(output, -1.0, 1.0)
-	return output.astype(numpy.float32, copy=False), state
+	return output, state
 
 
-# Dictionary of available demodulators
+def demodulate_ssb (
+	iq_samples: numpy.typing.NDArray[numpy.complex64],
+	sample_rate: float,
+	audio_sample_rate: int,
+	sideband: str = 'USB',
+	state: dict | None = None
+) -> tuple[numpy.typing.NDArray[numpy.float32], dict]:
+
+	"""
+	Demodulate Single Sideband (SSB) from IQ samples with state preservation.
+
+	SSB transmissions occupy roughly 300 - 2700 Hz of audio bandwidth on
+	one side of the carrier (USB = upper sideband, LSB = lower).  The
+	channel-extracted IQ baseband from scanner.py is centered on the
+	conventional SSB carrier frequency (a virtual point — there is no
+	actual carrier in the transmission), so the wanted sideband sits in
+	the positive frequencies of the IQ for USB and the negative
+	frequencies for LSB.
+
+	# ----- Algorithm choice ----------------------------------------------
+	#
+	# Three approaches were considered:
+	#
+	#   1. Frequency-shift + low-pass + take real part.  Simple but
+	#      requires aggressive filtering to suppress the unwanted sideband
+	#      sitting just on the other side of DC, and weak signals develop
+	#      a "warbling" quality from filter ripple.
+	#
+	#   2. Hilbert / phasing method via scipy.signal.hilbert.  Clean
+	#      mathematically (the IQ stream from a quadrature SDR is already
+	#      analytic, in principle), but the FFT-based Hilbert transform
+	#      has poor block-boundary continuity unless overlap-save is
+	#      added, and that's a non-trivial amount of state to manage.
+	#
+	#   3. Weaver's method: complex frequency shift to centre the wanted
+	#      sideband on DC, real-valued low-pass on each of I and Q, then
+	#      shift back and take the real part.  This is the standard
+	#      receiver implementation in commercial SDR software (Gqrx,
+	#      SDR#, fldigi all use it or a close variant).  It composes
+	#      cleanly with scipy's stateful sosfilt() so block-boundary
+	#      continuity is automatic, the LPF cleanly rejects the unwanted
+	#      sideband (which sits two bandwidths away from DC after the
+	#      shift), and there are no FFTs in the audio path.
+	#
+	# We use Weaver's method.  The two oscillators are stateful (phase
+	# carries across blocks) and the LPF uses scipy's standard sosfilt
+	# state vectors, identical to the pattern used by demodulate_nfm and
+	# demodulate_am.
+	#
+	# ----- Pipeline -------------------------------------------------------
+	#
+	#   IQ at sample_rate
+	#     ↓ decimate_iq → IQ at audio_sample_rate
+	#     ↓ multiply by exp(∓j 2π f_o t) (shift wanted sideband to DC)
+	#     ↓ Butterworth LPF at ±SSB_AUDIO_HALF_BW_HZ on real and imag
+	#     ↓ multiply by exp(±j 2π f_o t) (shift back)
+	#     ↓ take real part → real audio
+	#     ↓ DC removal (audio rate)
+	#     ↓ shared voice AGC
+	#   audio at audio_sample_rate
+	#
+	# The sign of the shift is what distinguishes USB from LSB:
+	#   USB: shift down (negative), then back up (positive)
+	#   LSB: shift up   (positive), then back down (negative)
+	#
+	# After the round-trip the wanted sideband ends up back at its
+	# original IQ frequencies, while everything outside ±SSB_AUDIO_HALF_BW_HZ
+	# (including the unwanted sideband and out-of-band noise) has been
+	# rejected by the low-pass.
+
+	Args:
+		iq_samples: Channel-extracted complex IQ at sample_rate
+		sample_rate: IQ sample rate in Hz
+		audio_sample_rate: Final audio rate (typically 16 kHz)
+		sideband: 'USB' or 'LSB' — selects which side of the carrier
+			contains the wanted audio
+		state: Per-channel state dict for cross-block continuity
+
+	Returns:
+		Tuple of (audio samples as float32 in [-1, 1], updated state dict)
+	"""
+
+	if len(iq_samples) == 0:
+		return numpy.array([], dtype=numpy.float32), state if state else {}
+
+	if state is None:
+		state = {}
+
+	if sideband not in ('USB', 'LSB'):
+		raise ValueError(f"sideband must be 'USB' or 'LSB', got {sideband!r}")
+
+	# 1. Decimate complex IQ to audio sample rate.
+	# The channel filter upstream has already band-limited the IQ to
+	# roughly the channel width (~4 kHz at 5 kHz spacing), so the 16 kHz
+	# audio Nyquist is plenty.  Doing the rest of the pipeline at audio
+	# rate keeps the LPF and frequency shifts cheap.
+	iq_audio, state = substation.dsp.filters.decimate_iq(
+		iq_samples,
+		sample_rate,
+		audio_sample_rate,
+		state,
+		state_prefix='ssb_iq_decim_'
+	)
+
+	if len(iq_audio) == 0:
+		return numpy.array([], dtype=numpy.float32), state
+
+	# 2. First frequency shift — bring the wanted sideband centre to DC.
+	# USB: the audio sits in positive IQ frequencies → shift down
+	# LSB: the audio sits in negative IQ frequencies → shift up
+	# The oscillator phase is preserved across blocks so the join between
+	# successive blocks doesn't introduce a click.
+	f_o = substation.constants.SSB_AUDIO_CENTER_HZ
+	shift_dir = -1.0 if sideband == 'USB' else +1.0
+
+	n = len(iq_audio)
+	sample_index = numpy.arange(n, dtype=numpy.float64)
+	phase_offset = state.get('ssb_shift_phase', 0.0)
+	step = 2.0 * numpy.pi * shift_dir * f_o / audio_sample_rate
+	phases = step * sample_index + phase_offset
+	iq_shifted = iq_audio * numpy.exp(1j * phases).astype(numpy.complex64)
+	# Wrap to [0, 2π) so the float doesn't grow without bound.
+	state['ssb_shift_phase'] = float((phase_offset + step * n) % (2.0 * numpy.pi))
+
+	# 3. Low-pass filter at ±SSB_AUDIO_HALF_BW_HZ.
+	# We apply the same real-valued Butterworth to the real and imaginary
+	# parts independently — that combination is mathematically equivalent
+	# to a complex bandpass on the original (pre-shift) IQ.  Each part
+	# needs its own filter state vector.
+	if state.get('ssb_lpf_fs') != audio_sample_rate:
+		state['ssb_lpf_sos'] = scipy.signal.butter(
+			substation.constants.SSB_LPF_ORDER,
+			substation.constants.SSB_AUDIO_HALF_BW_HZ,
+			btype='lowpass',
+			fs=audio_sample_rate,
+			output='sos',
+		)
+		zi_template = scipy.signal.sosfilt_zi(state['ssb_lpf_sos'])
+		state['ssb_lpf_zi_real'] = zi_template * 0.0
+		state['ssb_lpf_zi_imag'] = zi_template * 0.0
+		state['ssb_lpf_fs'] = audio_sample_rate
+
+	real_filt, state['ssb_lpf_zi_real'] = scipy.signal.sosfilt(
+		state['ssb_lpf_sos'], iq_shifted.real, zi=state['ssb_lpf_zi_real']
+	)
+	imag_filt, state['ssb_lpf_zi_imag'] = scipy.signal.sosfilt(
+		state['ssb_lpf_sos'], iq_shifted.imag, zi=state['ssb_lpf_zi_imag']
+	)
+	iq_filtered = (real_filt + 1j * imag_filt).astype(numpy.complex64)
+
+	# 4. Second frequency shift — undo the first shift so the audio is
+	# back at its original frequencies inside the IQ.  The sign is the
+	# opposite of the first shift.
+	phase_offset_back = state.get('ssb_unshift_phase', 0.0)
+	step_back = 2.0 * numpy.pi * (-shift_dir) * f_o / audio_sample_rate
+	phases_back = step_back * sample_index + phase_offset_back
+	iq_unshifted = iq_filtered * numpy.exp(1j * phases_back).astype(numpy.complex64)
+	state['ssb_unshift_phase'] = float((phase_offset_back + step_back * n) % (2.0 * numpy.pi))
+
+	# 5. Take the real part — that is the audio.
+	# Factor of 2 compensates for the fact that an analytic signal
+	# carries half its energy in the real part and half in the imaginary
+	# part; doubling the real part recovers the original amplitude.
+	audio = (2.0 * iq_unshifted.real).astype(numpy.float32)
+
+	# 6. DC removal at audio rate (high-pass at 30 Hz).
+	cutoff_hz = 30.0
+	if state.get('ssb_dc_fs') != audio_sample_rate:
+		state['ssb_dc_sos'] = scipy.signal.butter(
+			1, cutoff_hz, btype='highpass', fs=audio_sample_rate, output='sos'
+		)
+		state['ssb_dc_zi'] = scipy.signal.sosfilt_zi(state['ssb_dc_sos']) * 0.0
+		state['ssb_dc_fs'] = audio_sample_rate
+
+	audio, state['ssb_dc_zi'] = scipy.signal.sosfilt(
+		state['ssb_dc_sos'], audio, zi=state['ssb_dc_zi']
+	)
+
+	# 7. AGC via the shared voice helper.
+	output = _apply_voice_agc(audio, audio_sample_rate, state, state_prefix='ssb_')
+
+	return output, state
+
+
+# Dictionary of available demodulators.
+# USB and LSB share demodulate_ssb via functools.partial — they're the
+# same algorithm with different sideband flags, but exposed as separate
+# top-level modulation types because that's how every other SDR program
+# (Gqrx, SDR#, SDRConsole, fldigi, WSJT-X) labels them.  Users specifying
+# a band as `modulation: USB` or `modulation: LSB` get the natural label
+# without needing a separate sideband config field.
 DEMODULATORS: dict[str, typing.Callable] = {
 	'NFM': demodulate_nfm,
 	'AM': demodulate_am,
+	'USB': functools.partial(demodulate_ssb, sideband='USB'),
+	'LSB': functools.partial(demodulate_ssb, sideband='LSB'),
 	# Future demodulators can be added here:
 	# 'WFM': demodulate_wfm,
 }

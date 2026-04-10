@@ -19,6 +19,7 @@ By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan
     - [Other SoapySDR Devices](#other-soapysdr-devices)
 - [Key Features & Optimizations](#key-features-optimizations)
 - [Quick Start](#quick-start)
+- [Utility scripts](#utility-scripts)
 - [Command Line](#command-line)
 - [Python Module Usage](#python-module-usage)
 - [Configuration](#configuration)
@@ -26,6 +27,7 @@ By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan
 - [Broadcast WAV & Metadata](#broadcast-wav-bwf-metadata)
 - [Gain Tuning](#gain-tuning)
 - [Rejecting Empty/Noise Recordings](#rejecting-emptynoise-recordings)
+- [Dynamics Curve (Experimental)](#dynamics-curve-experimental)
 - [Parallel Scans](#parallel-scans-multiple-devices)
 - [Resource and Performance Notes](#resource-and-performance-notes)
 - [Limitations](#limitations)
@@ -295,6 +297,22 @@ Audio files are written to:
 ./audio/YYYY-MM-DD/<band>/<timestamp>_<band>_<channel>_<snr>dB_<device>_<index>.wav
 ```
 
+## Utility scripts
+
+Substation ships with a small `scripts/` directory of one-shot user utilities. These are not part of the main scanner — they're tools that read the config or work with frequencies, and are run with `python -m scripts.<name>`.
+
+### Antenna length calculator
+
+Calculate optimal antenna lengths (half-wave dipole, quarter-wave vertical, 5/8-wave vertical, full-wave loop) for any configured band or any frequency:
+
+```bash
+python -m scripts.antenna --band hf_night_4mhz   # use a configured band's centre frequency
+python -m scripts.antenna --freq 4625e3          # use a manual frequency in Hz
+python -m scripts.antenna --list                 # list all configured bands
+```
+
+For HF bands wider than ±2% of their centre frequency the report also shows the dipole's natural SWR window and the antenna lengths at the band edges, so you can decide whether to cut for the centre, an edge, or use a tuner. Lengths are reported in metres for HF/VHF and centimetres for UHF.
+
 ## Command Line
 ```bash
 substation --band <band> [--config <path>] [--device-type rtlsdr|hackrf|airspy|airspyhf|soapy:<driver>] [--device-index N]
@@ -418,7 +436,7 @@ Per-band keys:
 - `sample_rate`: Hz. Must cover the band plus margins; higher rates increase CPU.
 - `channel_width`: optional; defaults to `channel_spacing * 0.84`.
 - `type`: used to inherit defaults from `band_defaults`.
-- `modulation`: `AM` or `NFM`.
+- `modulation`: `AM`, `NFM`, `USB`, or `LSB`. USB/LSB use a Weaver-method SSB demodulator and are the right choice for HF voice — amateur convention is LSB below 10 MHz, USB above 10 MHz; HFGCS, VOLMET, and marine HF are all USB.
 - `recording_enabled`: enable recording for this band. Optional, defaults to `false` (can also be set in `band_defaults`).
 - `snr_threshold_db`: detection threshold (dB above noise floor).
 - `activation_variance_db`: optional minimum power variance (dB) across the detection window required for a channel to be considered active. Filters out stationary-noise triggers. Applies to all bands regardless of recording state. See [Rejecting empty/noise recordings](#rejecting-emptynoise-recordings) below. Defaults to `3.0`; set to `0` to disable.
@@ -598,6 +616,33 @@ The check operates on raw channel power computed from FFT bins, not on demodulat
 - TDMA data (TETRA, DMR) — frame structure produces strong variance
 - Burst data (ACARS, VDL Mode 2) — bursts produce maximum variance against silence
 - Any future modulation type added to the scanner — no demodulator-specific tuning needed
+
+## Dynamics Curve (Experimental)
+
+An optional per-sample noise-reduction stage that runs during recording, after spectral subtraction and before the soft limiter. It applies a smooth nonlinear transfer curve in dBFS:
+
+- **Below the threshold** (the "cut" region), quiet samples are progressively reduced — a downward expander that suppresses background noise. The curve is a smoothstep S-curve with zero slope at both endpoints, so there is no audible kink at the threshold or the floor. Samples below the floor are hard-zeroed.
+- **Above the threshold** (the "boost" region), loud samples are gently boosted — an upward expander that gives voice presence. The curve is a sin² hump with zero boost at both endpoints (so 0 dBFS samples pass through unchanged).
+
+Together the two regions widen the overall dynamic range. It works for any modulation type, has no envelope follower, and adds negligible CPU.
+
+This is **off by default** and is intended for A/B comparison testing. To enable it on your installation:
+
+```yaml
+recording:
+    dynamics_curve_enabled: true
+    dynamics_curve:
+        threshold_dbfs: -25.0   # Dividing line between cut and boost regions
+        cut_db: 6.0             # Reduction at the midpoint of the cut S-curve (max = 2× at floor)
+        boost_db: 1.5           # Peak boost in the boost hump
+        floor_dbfs: -60.0       # Hard silence below this level
+        cut_curve: 0.5          # 0..1; 0.5 = symmetric, <0.5 steeper near threshold
+        boost_curve: 0.5        # 0..1; same skew control for the boost hump
+```
+
+The function operates per-sample (no envelope follower, no attack/release), so very aggressive parameter values can introduce mild harmonic distortion on signals near the threshold. The defaults are conservative enough that this is benign on voice; if you hear an "edge" on the loudest syllables, lower `cut_db` and `boost_db`. If a recording sounds completely silent, you have probably set `floor_dbfs` too high — try `-60` or lower.
+
+The function clamps its output to the ±1.0 range as belt-and-braces speaker protection. If your configuration would otherwise drive the boost region above 0 dBFS, a warning is logged at startup so you can dial it back before listening.
 
 ## Parallel Scans (Multiple Devices)
 Run one process per device:

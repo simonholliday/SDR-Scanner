@@ -1132,7 +1132,9 @@ class RadioScanner:
 			modulation=self.modulation,
 			filename_suffix=filename_suffix,
 			soft_limit_drive=self.soft_limit_drive,
-			noise_reduction_enabled=self.recording_config.noise_reduction_enabled
+			noise_reduction_enabled=self.recording_config.noise_reduction_enabled,
+			dynamics_curve_enabled=self.recording_config.dynamics_curve_enabled,
+			dynamics_curve_config=self.recording_config.dynamics_curve,
 		)
 
 		# Pass the band-wide noise floor if we have it

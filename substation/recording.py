@@ -61,7 +61,9 @@ class ChannelRecorder:
 		modulation: str = "Unknown",
 		filename_suffix: str = None,
 		soft_limit_drive: float = 2.0,
-		noise_reduction_enabled: bool = True
+		noise_reduction_enabled: bool = True,
+		dynamics_curve_enabled: bool = False,
+		dynamics_curve_config: typing.Any = None,
 	) -> None:
 
 		"""
@@ -97,6 +99,8 @@ class ChannelRecorder:
 		self.soft_limit_drive = max(0.1, float(soft_limit_drive))
 		self.soft_limit_scale = 1.0 / numpy.tanh(self.soft_limit_drive)
 		self.noise_reduction_enabled = noise_reduction_enabled
+		self.dynamics_curve_enabled = dynamics_curve_enabled
+		self.dynamics_curve_config = dynamics_curve_config
 		self.initial_noise_floor_db: float | None = None
 
 		# Pre-allocated circular buffer: a fixed NumPy array with modulo wrap-around.
@@ -353,6 +357,25 @@ class ChannelRecorder:
 				)
 			except Exception as exc:
 				logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")
+
+		# Optional dynamics-curve stage: per-sample dual-region expander.
+		# Sits between spectral subtraction (which cleans the signal) and the
+		# soft limiter (which is the final clip protection).  Disabled by
+		# default; configured globally via RecordingConfig.dynamics_curve.
+		if self.dynamics_curve_enabled and self.dynamics_curve_config is not None and samples.size > 0:
+			try:
+				cfg = self.dynamics_curve_config
+				samples = substation.dsp.noise_reduction.apply_dynamics_curve(
+					samples,
+					threshold_dbfs=cfg.threshold_dbfs,
+					cut_db=cfg.cut_db,
+					boost_db=cfg.boost_db,
+					floor_dbfs=cfg.floor_dbfs,
+					cut_curve=cfg.cut_curve,
+					boost_curve=cfg.boost_curve,
+				)
+			except Exception as exc:
+				logger.warning(f"Dynamics curve failed for {self.filepath}: {exc}")
 
 		# Apply soft limiter using precomputed parameters
 		if samples.size > 0 and self.soft_limit_drive > 0:

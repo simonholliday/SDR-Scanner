@@ -147,6 +147,88 @@ class ScannerConfig(pydantic.BaseModel):
 	stuck_channel_threshold_seconds: float | None = pydantic.Field(default=None, gt=0)
 
 
+class DynamicsCurveConfig(pydantic.BaseModel):
+
+	"""
+	Parameters for the experimental dynamics-curve noise reduction stage.
+
+	apply_dynamics_curve is a per-sample dual-region expander: a smoothstep
+	S-curve cuts the level of quiet samples below the threshold (downward
+	expansion, suppresses noise), and a sin² hump gently boosts samples
+	above the threshold (upward expansion, gives voice presence).
+
+	See substation.dsp.noise_reduction.apply_dynamics_curve for the full
+	mathematical specification.
+
+	Attributes:
+		threshold_dbfs: Dividing line between cut and boost regions, in dBFS.
+			Must be strictly less than 0.  Typical values: -20 to -35 dBFS.
+
+		cut_db: Gain reduction at the midpoint of the cut S-curve.  The
+			maximum reduction (at the floor) is twice this value.  Set to
+			0.0 to disable the cut region.  Default: 6.0.
+
+		boost_db: Maximum gain boost at the peak of the boost hump.  Set
+			to 0.0 to disable the boost region.  Default: 1.5.
+
+		floor_dbfs: Lower threshold below which output is hard-zeroed.
+			Must be strictly less than threshold_dbfs.  Default: -60.0.
+
+		cut_curve: Position of the steepest gradient within the cut
+			S-curve, in [0, 1].  0.5 = symmetric.  Lower values shift the
+			steepest part toward the threshold; higher values shift it
+			toward the floor.
+
+		boost_curve: Same concept for the boost hump.  0.5 = symmetric.
+	"""
+
+	model_config = pydantic.ConfigDict(extra='forbid')
+
+	threshold_dbfs: float = pydantic.Field(default=-25.0, lt=0.0)
+	cut_db: float = pydantic.Field(default=6.0, ge=0.0)
+	boost_db: float = pydantic.Field(default=1.5, ge=0.0)
+	floor_dbfs: float = pydantic.Field(default=-60.0, lt=0.0)
+	cut_curve: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
+	boost_curve: float = pydantic.Field(default=0.5, ge=0.0, le=1.0)
+
+	@pydantic.model_validator(mode='after')
+	def _validate_levels (self) -> 'DynamicsCurveConfig':
+
+		"""
+		Cross-field validation for the level parameters.
+
+		Enforces that the floor sits strictly below the threshold so the
+		cut region has a non-zero width.  Logs a warning (does not raise)
+		if the boost configuration could push the output above 0 dBFS —
+		that case is also caught by a defensive clamp inside the function,
+		but a startup warning gives the user a chance to dial it back
+		before listening to the result.
+		"""
+
+		if self.floor_dbfs >= self.threshold_dbfs:
+			raise ValueError(
+				f"floor_dbfs ({self.floor_dbfs}) must be strictly below "
+				f"threshold_dbfs ({self.threshold_dbfs})"
+			)
+
+		# Maximum boost output occurs near the midpoint of the boost
+		# region, where the input level is roughly threshold_dbfs / 2 and
+		# the boost is up to boost_db.  If that sum exceeds 0 dBFS the
+		# defensive clamp inside apply_dynamics_curve will engage.
+		boost_peak_dbfs = (self.threshold_dbfs / 2.0) + self.boost_db
+
+		if boost_peak_dbfs > 0.0:
+			logger.warning(
+				f"dynamics_curve: boost_db={self.boost_db} dB combined with "
+				f"threshold_dbfs={self.threshold_dbfs} would push the boost "
+				f"region above 0 dBFS (~{boost_peak_dbfs:+.1f} dBFS at the peak); "
+				f"the defensive clamp will engage and the curve will not match "
+				f"the configured shape.  Reduce boost_db or lower threshold_dbfs."
+			)
+
+		return self
+
+
 class RecordingConfig(pydantic.BaseModel):
 	"""
 	Recording configuration (applies to all recorded bands).
@@ -178,6 +260,13 @@ class RecordingConfig(pydantic.BaseModel):
 		soft_limit_drive: Soft limiter aggressiveness (1.0 to 4.0).
 			Higher = more compression of loud signals. 2.0 is moderate limiting.
 			Prevents clipping while maintaining some dynamic range.
+
+		dynamics_curve_enabled: Whether to apply the experimental dynamics-curve
+			noise reduction stage to recorded audio.  Disabled by default; see
+			DynamicsCurveConfig and apply_dynamics_curve for details.
+
+		dynamics_curve: Parameters for the dynamics-curve stage.  Only consulted
+			when dynamics_curve_enabled is True.
 	"""
 
 	model_config = pydantic.ConfigDict(extra='forbid')
@@ -191,6 +280,8 @@ class RecordingConfig(pydantic.BaseModel):
 	soft_limit_drive: float = pydantic.Field(default=2.0, gt=0.0)
 	noise_reduction_enabled: bool = pydantic.Field(default=True)
 	recording_hold_time_ms: float = pydantic.Field(default=500.0, ge=0.0)
+	dynamics_curve_enabled: bool = pydantic.Field(default=False)
+	dynamics_curve: DynamicsCurveConfig = pydantic.Field(default_factory=DynamicsCurveConfig)
 
 
 class BandTypeConfig(pydantic.BaseModel):

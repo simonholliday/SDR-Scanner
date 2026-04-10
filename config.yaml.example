@@ -44,6 +44,20 @@ recording:
     # Soft limiter drive for post-processing; 1.5–3.0 is typical (higher = stronger limiting)
     soft_limit_drive: 1.25
 
+    # Experimental: dual-region expander applied per-sample to recorded audio.
+    # Cuts the level of quiet samples (downward expansion, suppresses noise)
+    # and gently boosts loud samples (upward expansion, gives voice presence).
+    # Disabled by default — set dynamics_curve_enabled: true to trial it.
+    # See README.md and substation/dsp/noise_reduction.py for details.
+    dynamics_curve_enabled: false
+    dynamics_curve:
+        threshold_dbfs: -25.0   # Dividing line between cut and boost regions
+        cut_db: 6.0             # Reduction at midpoint of cut S-curve (max = 2x at floor)
+        boost_db: 1.5           # Peak boost in the boost hump
+        floor_dbfs: -60.0       # Hard silence below this level
+        cut_curve: 0.5          # 0..1; 0.5 = symmetric, <0.5 = steeper near threshold
+        boost_curve: 0.5        # 0..1; same skew control for the boost hump
+
 band_defaults:
 
     # Default settings for PMR bands

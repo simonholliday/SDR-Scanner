@@ -55,6 +55,34 @@ AM_AGC_RELEASE_MS = 200.0  # 200 milliseconds
 AM_OUTPUT_GAIN = 0.5  # 50% (-6 dB)
 
 # ==============================================================================
+# SSB (Single Sideband) Demodulation Constants
+# ==============================================================================
+
+# Center frequency of the SSB voice audio band, in Hz.
+# ITU/amateur SSB voice occupies roughly 300 - 2700 Hz of audio bandwidth, so
+# the spectral center of a transmission sits around 1500 Hz.  The SSB
+# demodulator shifts the wanted sideband down by this amount to center the
+# audio on DC, where the post-shift low-pass filter can clip the unwanted
+# sideband symmetrically.
+SSB_AUDIO_CENTER_HZ = 1500.0
+
+# Half-bandwidth of the SSB audio low-pass filter, in Hz.  After the
+# frequency shift the audio runs from -1500 Hz to +1500 Hz; this filter
+# rejects everything outside that band, including the unwanted sideband
+# (which is now sitting on the negative-frequency side of DC).
+SSB_AUDIO_HALF_BW_HZ = 1500.0
+
+# IIR filter order for the SSB sideband-rejection low-pass.
+# After the Weaver shift, the unwanted sideband sits ~2x the LPF cutoff
+# above DC (a 1 kHz tone in the wrong sideband ends up at 2.5 kHz when
+# the cutoff is 1.5 kHz).  Order 5 gives only ~22 dB rejection there,
+# which the downstream AGC then partially undoes by amplifying the
+# residual.  Order 8 gives ~36 dB and is well within scipy's numerical
+# stability range for sosfilt — chosen as a balance between rejection
+# and transient ringing on voice content.
+SSB_LPF_ORDER = 8
+
+# ==============================================================================
 # Channel Detection and Scanning Constants
 # ==============================================================================
 

@@ -189,6 +189,99 @@ class TestActivationVariance:
 			substation.config.validate_config(minimal_config_dict)
 
 
+class TestDynamicsCurveConfig:
+
+	"""Validation tests for the experimental dynamics_curve recording stage."""
+
+	def test_disabled_by_default (self, app_config):
+		"""dynamics_curve_enabled should default to False so existing behaviour is unchanged."""
+		assert app_config.recording.dynamics_curve_enabled is False
+
+	def test_default_parameters_are_sane (self, app_config):
+		"""The default DynamicsCurveConfig should have sensible values."""
+		curve = app_config.recording.dynamics_curve
+		assert curve.threshold_dbfs == -25.0
+		assert curve.cut_db == 6.0
+		assert curve.boost_db == 1.5
+		assert curve.floor_dbfs == -60.0
+		assert curve.cut_curve == 0.5
+		assert curve.boost_curve == 0.5
+
+	def test_custom_parameters_accepted (self, minimal_config_dict):
+		"""All six parameters should be accepted when set explicitly."""
+		minimal_config_dict["recording"] = {
+			"dynamics_curve_enabled": True,
+			"dynamics_curve": {
+				"threshold_dbfs": -30.0,
+				"cut_db": 8.0,
+				"boost_db": 2.0,
+				"floor_dbfs": -55.0,
+				"cut_curve": 0.3,
+				"boost_curve": 0.7,
+			},
+		}
+		config = substation.config.validate_config(minimal_config_dict)
+		assert config.recording.dynamics_curve_enabled is True
+		assert config.recording.dynamics_curve.threshold_dbfs == -30.0
+		assert config.recording.dynamics_curve.cut_db == 8.0
+		assert config.recording.dynamics_curve.boost_curve == 0.7
+
+	def test_floor_above_threshold_rejected (self, minimal_config_dict):
+		"""floor_dbfs >= threshold_dbfs should fail validation."""
+		minimal_config_dict["recording"] = {
+			"dynamics_curve": {
+				"threshold_dbfs": -30.0,
+				"floor_dbfs": -20.0,
+			},
+		}
+		with pytest.raises(pydantic.ValidationError):
+			substation.config.validate_config(minimal_config_dict)
+
+	def test_threshold_at_zero_rejected (self, minimal_config_dict):
+		"""threshold_dbfs must be strictly less than 0."""
+		minimal_config_dict["recording"] = {
+			"dynamics_curve": {
+				"threshold_dbfs": 0.0,
+			},
+		}
+		with pytest.raises(pydantic.ValidationError):
+			substation.config.validate_config(minimal_config_dict)
+
+	def test_negative_cut_db_rejected (self, minimal_config_dict):
+		"""cut_db must be non-negative."""
+		minimal_config_dict["recording"] = {
+			"dynamics_curve": {
+				"cut_db": -1.0,
+			},
+		}
+		with pytest.raises(pydantic.ValidationError):
+			substation.config.validate_config(minimal_config_dict)
+
+	def test_curve_out_of_range_rejected (self, minimal_config_dict):
+		"""cut_curve and boost_curve must be in [0, 1]."""
+		minimal_config_dict["recording"] = {
+			"dynamics_curve": {
+				"cut_curve": 1.5,
+			},
+		}
+		with pytest.raises(pydantic.ValidationError):
+			substation.config.validate_config(minimal_config_dict)
+
+	def test_boost_clipping_warning (self, minimal_config_dict, caplog):
+		"""A boost configuration that would push the boost peak above 0 dBFS should log a warning (but still validate)."""
+		minimal_config_dict["recording"] = {
+			"dynamics_curve_enabled": True,
+			"dynamics_curve": {
+				"threshold_dbfs": -3.0,
+				"boost_db": 5.0,
+			},
+		}
+		with caplog.at_level(logging.WARNING, logger="substation.config"):
+			config = substation.config.validate_config(minimal_config_dict)
+		assert config.recording.dynamics_curve_enabled is True
+		assert any("dynamics_curve" in record.message for record in caplog.records)
+
+
 class TestExcludeChannelIndices:
 
 	def test_valid_indices (self, minimal_config_dict):
