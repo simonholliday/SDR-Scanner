@@ -232,7 +232,23 @@ class RadioScanner:
 		logger.info(f"Required bandwidth: {self.required_bandwidth/1e6:.5f} MHz (inc. {self.band_edge_margin_hz/1e3:.1f}kHz edge margin)")
 		logger.info(f"Sample rate: {self.sample_rate/1e6:.3f} MHz")
 		logger.info(f"SNR threshold: {self.snr_threshold_db} dB ON / {self.snr_threshold_off_db} dB OFF (hysteresis)")
-		logger.info(f"SDR Gain: {self.sdr_gain_db}")
+
+		# When the user provides per-element gains, the overall sdr_gain_db
+		# is *ignored* (see BandConfig._validate_band() and the gain setter
+		# in each device wrapper).  Logging its value here would be
+		# actively misleading — the user has already been warned one line
+		# earlier that the overall gain is being ignored, and the actual
+		# per-element values will be logged at INFO by the device wrapper
+		# once setGain is called.  In that case we emit a single summary
+		# line pointing to the per-element log lines below.
+		if self.band_config.sdr_gain_elements is not None:
+			element_summary = ', '.join(
+				f"{name}={value:g}" for name, value in self.band_config.sdr_gain_elements.items()
+			)
+			logger.info(f"SDR Gain: per-element ({element_summary})")
+		else:
+			logger.info(f"SDR Gain: {self.sdr_gain_db}")
+
 		logger.info(f"SDR Device: {self.device_type} (index {self.device_index})")
 		logger.info(f"Modulation: {self.modulation}")
 

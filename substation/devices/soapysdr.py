@@ -102,11 +102,18 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 	def _log_device_capabilities (self) -> None:
 
 		"""
-		Log available device capabilities at INFO/DEBUG level.
+		Log available device capabilities.
 
-		This information helps users tune their configuration for best
-		reception quality — gain element names and ranges, supported sample
-		rates, antennas, stream formats, and device-specific settings.
+		Hardware identity (serial, driver name) stays at INFO — that's
+		the one line users reliably want in their startup log to confirm
+		which device was picked.  The rest of the capability dump (gain
+		ranges, sample rates, antennas, stream formats) is demoted to
+		DEBUG: the *active* values for each of these are logged at INFO
+		elsewhere (`Sample rate:` in the scanner init block, `Gain
+		element 'LNA' set to ...` after gain assignment, `Stream format:
+		...` at stream start), so repeating the full capability table
+		on every run is noise.  Enable DEBUG when configuring a new
+		device for the first time to see the full list.
 		"""
 
 		hw_info = self._device.getHardwareInfo()
@@ -114,7 +121,8 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 		if hw_info:
 			logger.info(f"SoapySDR [{self._driver}]: {dict(hw_info)}")
 
-		# Gain elements and ranges — critical for optimal noise figure
+		# Gain elements and ranges — useful when tuning a new device but
+		# redundant once the per-element values are set and logged later.
 
 		gain_elements = self._device.listGains(self._soapy.SOAPY_SDR_RX, 0)
 
@@ -123,34 +131,40 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 			for element in gain_elements:
 				gain_range = self._device.getGainRange(self._soapy.SOAPY_SDR_RX, 0, element)
 				parts.append(f"{element}: {gain_range.minimum():.0f}–{gain_range.maximum():.0f} dB")
-			logger.info(f"Gain elements: {', '.join(parts)}")
+			logger.debug(f"Gain elements: {', '.join(parts)}")
 
 		# Overall gain range
 
 		overall_range = self._device.getGainRange(self._soapy.SOAPY_SDR_RX, 0)
-		logger.info(f"Overall gain range: {overall_range.minimum():.0f}–{overall_range.maximum():.0f} dB")
+		logger.debug(f"Overall gain range: {overall_range.minimum():.0f}–{overall_range.maximum():.0f} dB")
 
-		# AGC support
+		# AGC capability — note this is the device's advertised capability,
+		# not whether the Substation code path will actually use it (the
+		# AirSpy R2 reports True here but the auto-gain fallback logs its
+		# real behaviour at INFO at the gain-setter site).
 
 		has_agc = self._device.hasGainMode(self._soapy.SOAPY_SDR_RX, 0)
-		logger.info(f"Automatic gain control: {'supported' if has_agc else 'not supported'}")
+		logger.debug(f"Automatic gain control: {'supported' if has_agc else 'not supported'}")
 
-		# Sample rates
+		# Sample rates — the *chosen* rate is already logged at INFO by
+		# the scanner before this method runs.
 
 		sample_rates = self._device.listSampleRates(self._soapy.SOAPY_SDR_RX, 0)
 
 		if sample_rates:
 			rates_str = ', '.join(f"{r / 1e6:.3f} MHz" for r in sample_rates)
-			logger.info(f"Supported sample rates: {rates_str}")
+			logger.debug(f"Supported sample rates: {rates_str}")
 
 		# Antennas
 
 		antennas = self._device.listAntennas(self._soapy.SOAPY_SDR_RX, 0)
 
 		if antennas:
-			logger.info(f"Antennas: {', '.join(antennas)}")
+			logger.debug(f"Antennas: {', '.join(antennas)}")
 
-		# Stream format negotiation context.
+		# Stream format negotiation context.  The *chosen* format is
+		# logged at INFO by _negotiate_stream_format() at stream start, so
+		# the capability enumeration here is DEBUG-only.
 		# getNativeStreamFormat requires a mutable fullScale output parameter
 		# in the SoapySDR Python bindings; some older bindings have a
 		# different signature and raise TypeError or AttributeError.
@@ -158,10 +172,10 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 		try:
 			native_fmt = self._device.getNativeStreamFormat(self._soapy.SOAPY_SDR_RX, 0, [0.0])
 			supported_fmts = self._device.getStreamFormats(self._soapy.SOAPY_SDR_RX, 0)
-			logger.info(f"Native format: {native_fmt}, supported: {', '.join(supported_fmts)}")
+			logger.debug(f"Native format: {native_fmt}, supported: {', '.join(supported_fmts)}")
 		except (TypeError, AttributeError):
 			supported_fmts = self._device.getStreamFormats(self._soapy.SOAPY_SDR_RX, 0)
-			logger.info(f"Supported formats: {', '.join(supported_fmts)}")
+			logger.debug(f"Supported formats: {', '.join(supported_fmts)}")
 
 		# Device-specific settings (bias tee, clock source, etc.)
 
@@ -456,12 +470,19 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 			# No normalisation needed — avoids overdriving the audio output.
 			# RTL-SDR typically produces RMS ~0.01-0.05; values above 0.001
 			# are well within float32 precision and demodulator range.
-			logger.info(f"IQ sample scale: no normalisation needed (median RMS {median_rms:.6f})")
+			# Demoted to DEBUG because the preceding "IQ calibration ..."
+			# line already shows the median RMS, and no-op is the default
+			# case — only the non-trivial scale path below is load-bearing
+			# for interpreting downstream amplitudes (e.g. the ADC
+			# saturation check).
+			logger.debug(f"IQ sample scale: no normalisation needed (median RMS {median_rms:.6f})")
 			return 1.0
 
 		# Samples are very small (e.g., AirSpy HF+ with attenuation).
 		# Scale so that the median noise floor RMS maps to ~0.01, which is
 		# typical for RTL-SDR and produces good demodulated audio levels.
+		# This branch stays at INFO because a non-trivial scale factor
+		# changes the meaning of every subsequent sample amplitude.
 		target_rms = 0.01
 		scale = target_rms / median_rms
 		logger.info(f"IQ sample scale: median RMS {median_rms:.6f} — applying {scale:.1f}x normalisation")
