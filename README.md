@@ -22,6 +22,7 @@ By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan
 - [Utility scripts](#utility-scripts)
 - [Command Line](#command-line)
 - [Python Module Usage](#python-module-usage)
+    - [OSC event forwarding](#osc-event-forwarding)
 - [Configuration](#configuration)
 - [SoapySDR Installation](#soapysdr-installation-airspy-and-other-devices)
 - [Broadcast WAV & Metadata](#broadcast-wav-bwf-metadata)
@@ -365,6 +366,37 @@ if __name__ == "__main__":
 ```
 
 See [examples/scan_demo.py](examples/scan_demo.py) for a more detailed implementation.
+
+### OSC event forwarding
+
+Substation can forward channel state changes and saved recordings as OSC (Open Sound Control) messages, so downstream tools — MIDI sequencers, sample players, VJ software, lighting rigs — can react to radio activity in real time. Install the optional dependency:
+
+```bash
+pip install -e ".[osc]"
+```
+
+Then attach an `OscEventSender` to any `RadioScanner` instance:
+
+```python
+import substation.osc_sender
+
+osc_sender = substation.osc_sender.OscEventSender(
+    host='127.0.0.1', port=9000,          # sequencer endpoint
+    sampler_host='127.0.0.1',             # optional: also notify a sampler
+    sampler_port=9002,
+)
+osc_sender.attach(scanner)
+```
+
+The sender emits the following OSC messages:
+
+| Address | When | Arguments |
+| :--- | :--- | :--- |
+| `/radio/state` | Channel turns ON or OFF | `band_name:str, channel_index:int, is_active:int(0/1), snr_db:float` |
+| `/radio/recording` | Recording finalised on disk | `band_name:str, channel_index:int, file_path:str` |
+| `/sample/import` | Recording finalised (only if `sampler_host` set) | `file_path:str` |
+
+Sends are non-blocking UDP (fire-and-forget); transient socket errors are logged as warnings and never raised back into the scanner. See [examples/scan_osc.py](examples/scan_osc.py) for a working script.
 
 Options:
 - `--config`, `-c`: path to config file (default `config.yaml`).

@@ -18,6 +18,9 @@ Features:
 - PPM frequency calibration against a known reference signal
 - Broadcast WAV (BWF) output with embedded frequency / timestamp /
   modulation metadata
+- Optional OSC event forwarding to downstream tools (MIDI sequencer,
+  sampler, VJ software, ...) via substation.osc_sender — install with
+  pip install -e ".[osc]"
 
 Typical usage:
     substation --band pmr

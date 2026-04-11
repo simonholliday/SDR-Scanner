@@ -43,6 +43,15 @@ dev = [
     "mypy>=1.0,<1.18",
 ]
 
+# OSC event forwarding — install with `pip install -e ".[osc]"`.
+# Enables substation.osc_sender.OscEventSender to bridge scanner
+# callbacks onto UDP OSC messages (e.g. Subsequence sequencer on
+# port 9000, Subsample sampler on port 9002).  See README section
+# "OSC event forwarding" for the wire format and address table.
+osc = [
+    "python-osc>=1.8",
+]
+
 [project.scripts]
 substation = "substation.cli:main"
 
