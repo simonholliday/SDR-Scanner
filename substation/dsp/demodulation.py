@@ -3,6 +3,7 @@ Demodulation functions for various modulation types
 """
 
 import functools
+import logging
 import typing
 
 import numpy
@@ -12,6 +13,68 @@ import scipy.signal
 
 import substation.constants
 import substation.dsp.filters
+
+logger = logging.getLogger(__name__)
+
+
+def _pick_if_decimation (sample_rate: float, audio_sample_rate: int, oversample: float) -> int:
+
+	"""
+	Choose an integer decimation factor for the IF stage that produces a
+	clean intermediate rate.
+
+	The naive choice — round(sample_rate / target_if_rate) — is correct
+	when sample_rate is an integer multiple of audio_sample_rate but
+	produces pathological resampling otherwise.  For example, with
+	sample_rate=2500000 and audio_sample_rate=16000, the naive answer is
+	39, which yields if_rate=64103 — coprime with 2500000, so the
+	downstream rational resampler tries to allocate a 50-million-tap
+	filter (~400 MB) and locks the system up.
+
+	This helper searches a window around the ideal decimation value for
+	an integer divisor of sample_rate (so the IF decimation step uses
+	fast integer downsampling), and returns the closest such divisor.
+	If no integer divisor exists in the search window, it falls back to
+	the rounded value (which will trigger rational resampling — but the
+	defensive backstop in _decimate_common will catch the pathological
+	cases).
+
+	The selection prefers larger decimation factors when distances are
+	tied: a higher decimation = lower IF rate = less downstream work.
+
+	Args:
+		sample_rate: SDR sample rate in Hz
+		audio_sample_rate: Final audio rate in Hz
+		oversample: How many times the audio rate the IF should sit at
+			(typically 4 for NFM to give the FM discriminator headroom)
+
+	Returns:
+		An integer decimation factor.  Guaranteed >= 1.
+	"""
+
+	target_if_rate = audio_sample_rate * oversample
+	ideal = max(1, int(round(sample_rate / target_if_rate)))
+
+	sr_int = int(round(sample_rate))
+
+	# Search a 2x window around the ideal value for integer divisors of
+	# sample_rate.  The window is generous enough to find a clean divisor
+	# for every common SDR sample rate while staying close to the
+	# user-intended IF oversampling ratio.
+	search_min = max(1, ideal // 2)
+	search_max = max(search_min, ideal * 2)
+
+	candidates = [d for d in range(search_min, search_max + 1) if sr_int % d == 0]
+
+	if not candidates:
+		# Pathological — no integer divisor in the window.  Fall back to
+		# the rounded value; the rational-resample path will handle it
+		# (or the backstop in _decimate_common will refuse and warn).
+		return ideal
+
+	# Pick the candidate closest to the ideal.  Tie-break by preferring
+	# the larger decimation factor (lower IF rate, less downstream cost).
+	return min(candidates, key=lambda d: (abs(d - ideal), -d))
 
 
 def _apply_voice_agc (
@@ -88,22 +151,21 @@ def demodulate_nfm (
 	if state is None:
 		state = {}
 
-	# 1. Decimate IQ samples to an integer-multiple IF rate to reduce CPU and complexity.
-	# The IF rate is kept high enough (3-4x audio rate) for reliable FM math and de-emphasis.
-	target_if_rate = audio_sample_rate * substation.constants.NFM_IF_OVERSAMPLE
-	if_decimation = max(1, int(round(sample_rate / target_if_rate)))
-	
-	# Optimization: if the total ratio to audio is an integer, pick a factor of it.
+	# 1. Decimate IQ samples to an IF rate that is an integer divisor of
+	# the input sample rate AND keeps the IF at roughly NFM_IF_OVERSAMPLE x
+	# the audio rate.  Picking a clean divisor here is essential — see the
+	# _pick_if_decimation helper for the gory details.  Without this, a
+	# 2.5 MHz AirSpy R2 → 16 kHz audio path would round to 39, producing
+	# if_rate=64103 (coprime with 2500000) and a 50 million tap rational
+	# resampling filter that locks the system up.
+	if_decimation = _pick_if_decimation(
+		sample_rate,
+		audio_sample_rate,
+		substation.constants.NFM_IF_OVERSAMPLE,
+	)
+
 	sr_int = int(round(sample_rate))
-	if sr_int % audio_sample_rate == 0:
-		total_factor = sr_int // audio_sample_rate
-		# Find largest divisor of total_factor that is <= our calculated if_decimation
-		for i in range(if_decimation, 0, -1):
-			if total_factor % i == 0:
-				if_decimation = i
-				break
-	
-	if_rate = int(round(sample_rate / if_decimation))
+	if_rate = sr_int // if_decimation if sr_int % if_decimation == 0 else int(round(sample_rate / if_decimation))
 
 	iq_if, state = substation.dsp.filters.decimate_iq(
 		iq_samples,
@@ -173,8 +235,14 @@ def demodulate_am (
 	"""
 	Demodulate Amplitude Modulation (AM) from IQ samples with state preservation.
 
-	Performs envelope detection, removes DC, and applies AGC.
-	Efficiently converts to a real signal (envelope) before decimation.
+	Pipeline: decimate IQ to a clean intermediate rate, take the envelope,
+	decimate the envelope to audio rate, DC remove, apply AGC.
+
+	The IF decimation step keeps the resampling chain manageable: without
+	it, sample rates that don't have a small-gcd ratio with the audio rate
+	(e.g. AirSpy R2 at 2.5 MHz → 16 kHz audio) would force decimate_audio
+	into a multi-million-tap rational resampler.  See _pick_if_decimation
+	for the helper that chooses a decimation factor.
 	"""
 
 	if len(iq_samples) == 0:
@@ -183,18 +251,41 @@ def demodulate_am (
 	if state is None:
 		state = {}
 
-	# 1. AM envelope detection: magnitude of IQ gives the audio envelope.
-	# Done at the full RF rate for maximum timing precision before decimation.
-	demod = numpy.abs(iq_samples)
+	# 1. Decimate IQ to a clean intermediate rate (chosen so the rest of the
+	# chain runs as cheap integer / small-rational resampling).
+	if_decimation = _pick_if_decimation(
+		sample_rate,
+		audio_sample_rate,
+		substation.constants.AM_IF_OVERSAMPLE,
+	)
 
-	# 2. Decimate to final audio rate.
+	sr_int = int(round(sample_rate))
+	if_rate = sr_int // if_decimation if sr_int % if_decimation == 0 else int(round(sample_rate / if_decimation))
+
+	iq_if, state = substation.dsp.filters.decimate_iq(
+		iq_samples,
+		sample_rate,
+		if_rate,
+		state,
+		state_prefix='am_iq_decim_',
+	)
+
+	if len(iq_if) == 0:
+		return numpy.array([], dtype=numpy.float32), state
+
+	# 2. AM envelope detection at the intermediate rate.  Voice AM
+	# bandwidth is ~5 kHz so a 50-100 kHz IF rate has plenty of headroom
+	# for the envelope to track without aliasing.
+	demod = numpy.abs(iq_if)
+
+	# 3. Decimate envelope to final audio rate.
 	audio, state = substation.dsp.filters.decimate_audio(
 		demod,
-		sample_rate,
+		if_rate,
 		audio_sample_rate,
 		state
 	)
-	
+
 	if len(audio) == 0:
 		return audio.astype(numpy.float32, copy=False), state
 

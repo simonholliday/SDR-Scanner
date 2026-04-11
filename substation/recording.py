@@ -30,6 +30,26 @@ import substation.dsp.noise_reduction
 logger = logging.getLogger(__name__)
 
 
+class _BextMetadata (typing.TypedDict):
+
+	"""
+	Typed view of the Broadcast WAV (BEXT) metadata dict built at recorder
+	construction and consumed by _append_bext_chunk().  Exists so mypy can
+	resolve self.bext_metadata['description'].encode(...) to str.encode()
+	rather than object.encode().  No runtime overhead — TypedDict is a
+	compile-time annotation only.
+	"""
+
+	description: str
+	originator: str
+	originator_reference: str
+	origination_date: str
+	origination_time: str
+	time_reference: int
+	version: int
+	coding_history: str
+
+
 class ChannelRecorder:
 	
 	"""
@@ -59,8 +79,8 @@ class ChannelRecorder:
 		disk_flush_interval_seconds: float,
 		audio_output_dir: str,
 		modulation: str = "Unknown",
-		filename_suffix: str = None,
-		soft_limit_drive: float = 2.0,
+		filename_suffix: str | None = None,
+		soft_limit_drive: float = 1.25,
 		noise_reduction_enabled: bool = True,
 		dynamics_curve_enabled: bool = False,
 		dynamics_curve_config: typing.Any = None,
@@ -84,9 +104,23 @@ class ChannelRecorder:
 			buffer_size_seconds: Maximum buffer size in seconds (prevents unbounded memory growth)
 			disk_flush_interval_seconds: How often to flush buffer to disk (trade-off: latency vs overhead)
 			audio_output_dir: Base output directory path
-			modulation: Modulation type (e.g., 'NFM', 'AM') - stored in metadata
+			modulation: Modulation type (e.g., 'NFM', 'AM', 'USB') - stored in BWF metadata
 			filename_suffix: Optional suffix for filename (e.g., SNR and device info)
-			soft_limit_drive: Soft limiter drive amount (1.0-4.0, higher = more aggressive)
+			soft_limit_drive: Tanh soft-limiter drive amount.  Higher values
+				compress louder signals more aggressively.  Typical range
+				1.0 - 3.0; the config default (1.25) is a gentle setting
+				that leaves most voice content untouched.
+			noise_reduction_enabled: When True (default), spectral-subtraction
+				noise reduction is applied to each flushed block before it is
+				written to disk.  Disable to record the raw demodulated audio.
+			dynamics_curve_enabled: When True, an experimental dual-region
+				expander (cut-below-threshold + boost-above-threshold) is
+				applied after noise reduction and before the soft limiter.
+				Off by default; driven from RecordingConfig in config.yaml.
+			dynamics_curve_config: DynamicsCurveConfig instance (or any
+				object with the expected fields) supplying the expander's
+				tuning parameters.  Only read when dynamics_curve_enabled
+				is True.
 		"""
 
 		self.channel_freq = channel_freq
@@ -200,7 +234,7 @@ class ChannelRecorder:
 		# We can't write it now because we don't know the final file size yet
 		# (BEXT chunk is appended after all audio data is written)
 
-		self.bext_metadata = {
+		self.bext_metadata: _BextMetadata = {
 			'description': bwf_description,
 			'originator': bwf_originator,
 			'originator_reference': bwf_originator_reference,
@@ -338,7 +372,7 @@ class ChannelRecorder:
 
 		await asyncio.get_running_loop().run_in_executor(None, self._write_samples_to_wav, samples_to_write)
 
-	def _write_samples_to_wav (self, samples:numpy.typing.NDArray[numpy.float32]) -> None:
+	def _write_samples_to_wav (self, samples: numpy.typing.NDArray[numpy.float32]) -> None:
 
 		"""
 		Write audio samples to WAV file (runs in executor thread)
@@ -348,14 +382,21 @@ class ChannelRecorder:
 		"""
 
 		# Apply noise reduction using faster spectral subtraction method
-		# This is 5-10x faster than the noisereduce library
+		# This is 5-10x faster than the noisereduce library.  We catch the
+		# family of errors numpy/scipy can realistically raise on bad data
+		# (shape mismatches, invalid parameters, filter stability issues)
+		# so a single bad block becomes a warning rather than killing the
+		# recorder thread, but we deliberately let truly unexpected errors
+		# (AttributeError, ImportError, KeyboardInterrupt, etc.) propagate
+		# so bugs introduced by refactoring surface immediately instead of
+		# being buried in the log.
 		if self.noise_reduction_enabled:
 			try:
 				samples, self.noise_mag = substation.dsp.noise_reduction.apply_spectral_subtraction(
 					samples, self.audio_sample_rate, oversub=0.7, floor=0.06,
 					noise_mag=self.noise_mag, adaptive_noise_estimation=self.initial_noise_floor_db is not None,
 				)
-			except Exception as exc:
+			except (ValueError, TypeError, RuntimeError) as exc:
 				logger.warning(f"Noise reduction failed for {self.filepath}: {exc}")
 
 		# Optional dynamics-curve stage: per-sample dual-region expander.
@@ -374,7 +415,7 @@ class ChannelRecorder:
 					cut_curve=cfg.cut_curve,
 					boost_curve=cfg.boost_curve,
 				)
-			except Exception as exc:
+			except (ValueError, TypeError, RuntimeError) as exc:
 				logger.warning(f"Dynamics curve failed for {self.filepath}: {exc}")
 
 		# Apply soft limiter using precomputed parameters

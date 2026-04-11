@@ -1,5 +1,7 @@
 """Tests for AM and NFM demodulation with synthetic IQ."""
 
+import time
+
 import numpy
 import pytest
 import scipy.fft
@@ -91,6 +93,101 @@ class TestAMDemodulation:
 		audio, _ = substation.dsp.demodulation.demodulate_am(iq, 1_024_000, 16000)
 		assert numpy.all(audio >= -1.0)
 		assert numpy.all(audio <= 1.0)
+
+
+class TestPickIfDecimation:
+
+	"""
+	Tests for the _pick_if_decimation helper.
+
+	Regression tests for the AirSpy R2 hang: with sample_rate=2500000 and
+	audio_sample_rate=16000, the previous code rounded to if_decimation=39
+	which produced if_rate=64103 (coprime with 2500000) and a 50-million-
+	tap rational resampling filter.  The helper must always pick a value
+	that exactly divides sample_rate so the IF decimation step uses fast
+	integer downsampling.
+	"""
+
+	def test_airspy_r2_2_5mhz (self):
+		"""AirSpy R2 native rate must produce a clean integer divisor."""
+		dec = substation.dsp.demodulation._pick_if_decimation(2_500_000, 16_000, 4.0)
+		assert 2_500_000 % dec == 0, f"if_decimation {dec} must evenly divide 2500000"
+		# Expected pick: 40 (closest integer divisor of 2500000 to ideal 39)
+		assert dec == 40
+
+	def test_rtlsdr_1024khz_unchanged (self):
+		"""RTL-SDR PMR config must still pick if_decimation=16 (preserves prior behaviour)."""
+		dec = substation.dsp.demodulation._pick_if_decimation(1_024_000, 16_000, 4.0)
+		assert dec == 16
+
+	def test_hackrf_2_4mhz (self):
+		"""HackRF 2.4 MHz path picks a clean divisor."""
+		dec = substation.dsp.demodulation._pick_if_decimation(2_400_000, 16_000, 4.0)
+		assert 2_400_000 % dec == 0
+		assert dec == 40   # ideal 38, closest divisor 40
+
+	def test_hackrf_dmr_12_5mhz (self):
+		"""HackRF DMR wide-band path picks a clean divisor."""
+		dec = substation.dsp.demodulation._pick_if_decimation(12_500_000, 16_000, 4.0)
+		assert 12_500_000 % dec == 0
+		assert dec == 200   # ideal 195, divisors include 200
+
+	def test_airspy_hf_912khz (self):
+		"""AirSpy HF+ Discovery native rate picks a clean divisor."""
+		dec = substation.dsp.demodulation._pick_if_decimation(912_000, 16_000, 4.0)
+		assert 912_000 % dec == 0
+
+	def test_returns_at_least_one (self):
+		"""For very low sample rates, the helper must never return 0."""
+		dec = substation.dsp.demodulation._pick_if_decimation(48_000, 16_000, 4.0)
+		assert dec >= 1
+
+
+class TestNFMAt2_5MHz:
+
+	"""
+	Regression tests proving the AirSpy R2 NFM hang is fixed.  Each test
+	caps execution time at 1 second — the previously-broken path tried to
+	allocate a 50-million-tap filter (~400 MB) inside scipy.signal.resample_poly
+	and could lock up a 2 GB Pi for minutes (or OOM-kill it).
+	"""
+
+	def test_nfm_2_5mhz_completes_quickly (self):
+		"""demodulate_nfm at 2.5 MHz must process a 200ms slice in well under 1s."""
+		sr = 2_500_000
+		asr = 16_000
+		duration_s = 0.2
+
+		# Generate a simple FM-modulated 1 kHz tone
+		n = int(sr * duration_s)
+		t = numpy.arange(n, dtype=numpy.float64) / sr
+		audio_freq = 1000.0
+		deviation = 2500.0
+		phase = 2 * numpy.pi * deviation * numpy.cumsum(numpy.sin(2 * numpy.pi * audio_freq * t)) / sr
+		iq = numpy.exp(1j * phase).astype(numpy.complex64)
+
+		start = time.perf_counter()
+		audio, _ = substation.dsp.demodulation.demodulate_nfm(iq, sr, asr)
+		elapsed = time.perf_counter() - start
+
+		assert elapsed < 1.0, f"demodulate_nfm took {elapsed:.2f}s — should be well under 1s"
+		assert len(audio) > 0
+		# Sanity check the recovered tone is in the right ballpark
+		dominant = _dominant_freq(audio[len(audio) // 5:], asr)
+		assert abs(dominant - audio_freq) < 200
+
+	def test_am_2_5mhz_completes_quickly (self):
+		"""demodulate_am at 2.5 MHz must also be fast (now uses the same IF helper)."""
+		sr = 2_500_000
+		asr = 16_000
+		iq = iq_generators.generate_am_iq(1000.0, 0.8, sr, 0.2)
+
+		start = time.perf_counter()
+		audio, _ = substation.dsp.demodulation.demodulate_am(iq, sr, asr)
+		elapsed = time.perf_counter() - start
+
+		assert elapsed < 1.0, f"demodulate_am took {elapsed:.2f}s — should be well under 1s"
+		assert len(audio) > 0
 
 
 class TestDemodulatorsDict:

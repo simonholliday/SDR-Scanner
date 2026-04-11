@@ -32,6 +32,17 @@ dependencies = [
     # See installation.txt section 4.
 ]
 
+[project.optional-dependencies]
+# Development tools — install with `pip install -e ".[dev]"`.
+# pytest is used for the test suite; mypy for the type-check pass
+# described in AGENT-INSTRUCTIONS.md §4.  Pinned below 1.18 because
+# newer releases ship a C-accelerated backend (librt) that segfaults
+# on aarch64 (Raspberry Pi) at time of writing.
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0,<1.18",
+]
+
 [project.scripts]
 substation = "substation.cli:main"
 
@@ -45,3 +56,25 @@ version = {attr = "substation.__version__"}
 testpaths = ["tests"]
 pythonpath = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+# Keep mypy strict on our own code.  We only add per-module overrides
+# below to silence "library stubs not installed" errors for third-party
+# packages that don't ship PEP 561 stubs — scipy, SoapySDR, rtlsdr,
+# noisereduce, and soundfile.  Using per-module overrides instead of a
+# global `ignore_missing_imports = true` keeps accidental typos in local
+# imports visible as errors.
+python_version = "3.10"
+
+[[tool.mypy.overrides]]
+module = [
+    "scipy",
+    "scipy.fft",
+    "scipy.ndimage",
+    "scipy.signal",
+    "SoapySDR",
+    "rtlsdr",
+    "noisereduce",
+    "soundfile",
+]
+ignore_missing_imports = true

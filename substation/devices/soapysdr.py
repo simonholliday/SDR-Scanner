@@ -240,6 +240,29 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 
 		if value == 'auto' or value is None:
 
+			# AirSpy R2 special case.  SoapyAirspy reports hasGainMode(True)
+			# but the underlying AirSpy R2 hardware does not provide a true
+			# closed-loop AGC: enabling AGC mode leaves gain at 0 dB and
+			# does not respond to incoming signal levels.  Real-world
+			# symptom is "zero recordings overnight" because the receiver
+			# is effectively muted.  Fall back to the README-recommended
+			# manual per-element gain (LNA-first noise figure principle).
+			# To override, set sdr_gain_db or sdr_gain_elements explicitly.
+			if self._driver == 'airspy':
+				logger.info(
+					"AirSpy R2 'auto' gain requested, but the SoapyAirspy module's "
+					"AGC mode is not effective.  Falling back to manual gain "
+					"(LNA=10, MIX=5, VGA=12, 27 dB total).  Override with "
+					"sdr_gain_db or sdr_gain_elements in config.yaml for finer control."
+				)
+				self._device.setGainMode(self._soapy.SOAPY_SDR_RX, 0, False)
+				self._device.setGain(self._soapy.SOAPY_SDR_RX, 0, 'LNA', 10.0)
+				self._device.setGain(self._soapy.SOAPY_SDR_RX, 0, 'MIX', 5.0)
+				self._device.setGain(self._soapy.SOAPY_SDR_RX, 0, 'VGA', 12.0)
+				self._gain_elements = {'LNA': 10.0, 'MIX': 5.0, 'VGA': 12.0}
+				self._gain = None
+				return
+
 			if self._device.hasGainMode(self._soapy.SOAPY_SDR_RX, 0):
 				self._device.setGainMode(self._soapy.SOAPY_SDR_RX, 0, True)
 				self._gain = 'auto'
@@ -393,10 +416,15 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 
 			if sr.ret > 0:
 
+				# Unify both code paths onto complex64 so the downstream RMS
+				# calculation has a single, well-typed input.  asarray with
+				# an explicit dtype is a no-op view when `buf` is already
+				# complex64, and a conversion otherwise.
+				samples: numpy.typing.NDArray[numpy.complex64]
 				if is_cs16:
 					samples = self._convert_cs16_to_complex64(buf, sr.ret)
 				else:
-					samples = buf[:sr.ret]
+					samples = numpy.asarray(buf[:sr.ret], dtype=numpy.complex64)
 
 				block_rms = float(numpy.sqrt(numpy.mean(numpy.abs(samples) ** 2)))
 				rms_values.append(block_rms)
@@ -499,6 +527,11 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 		# See _calibrate_iq_scale for the median-RMS measurement strategy
 		# and the rationale for picking it over peak detection.
 		self._iq_scale = self._calibrate_iq_scale(self._stream, self._stream_format)
+
+		# Expose the calibration scale on the BaseDevice attribute so
+		# upstream code (notably the ADC saturation check in scanner.py)
+		# can interpret post-normalisation amplitudes correctly.
+		self.iq_scale = self._iq_scale
 
 		self._stop_event.clear()
 		self._rx_buffer = numpy.array([], dtype=numpy.complex64)
@@ -632,10 +665,14 @@ class SoapySdrDevice (substation.devices.base.BaseDevice):
 
 				if sr.ret > 0:
 
+					# Same unification trick as _calibrate_iq_scale: annotate
+					# once as complex64 and let asarray do a no-op view when
+					# buf is already complex64, a real conversion otherwise.
+					chunk: numpy.typing.NDArray[numpy.complex64]
 					if is_cs16:
 						chunk = self._convert_cs16_to_complex64(buf, sr.ret)
 					else:
-						chunk = buf[:sr.ret].copy()
+						chunk = numpy.asarray(buf[:sr.ret], dtype=numpy.complex64).copy()
 
 					collected[offset:offset + sr.ret] = chunk
 					offset += sr.ret

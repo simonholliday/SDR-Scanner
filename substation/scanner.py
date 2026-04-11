@@ -65,7 +65,18 @@ class RadioScanner:
 		self.freq_start = self.band_config.freq_start
 		self.freq_end = self.band_config.freq_end
 		self.channel_spacing = self.band_config.channel_spacing
-		self.channel_width = self.band_config.channel_width
+
+		# channel_width is typed as Optional on BandConfig, but the
+		# BandConfig._validate_band() model validator guarantees it has been
+		# defaulted to (channel_spacing * CHANNEL_WIDTH_FRACTION) before the
+		# scanner sees it.  Narrow it here once so the rest of the class can
+		# use a plain float.
+		channel_width = self.band_config.channel_width
+		assert channel_width is not None, (
+			"BandConfig._validate_band() should have set channel_width by now"
+		)
+		self.channel_width: float = channel_width
+
 		self.sample_rate = self.band_config.sample_rate
 		self.snr_threshold_db = self.band_config.snr_threshold_db
 		# Hysteresis: use a lower threshold to turn OFF than to turn ON
@@ -83,7 +94,13 @@ class RadioScanner:
 
 		self.sdr_gain_db = self.band_config.sdr_gain_db
 
-		self.modulation = self.band_config.modulation
+		# Modulation is Optional on BandConfig (bands can exist for detection
+		# only).  Normalise to a concrete string so downstream code that
+		# indexes into DEMODULATORS or constructs ChannelRecorder doesn't have
+		# to handle None.  'Unknown' is deliberately NOT a key in the
+		# DEMODULATORS dict, so can_demod below still correctly resolves to
+		# False for detection-only bands.
+		self.modulation: str = self.band_config.modulation or 'Unknown'
 		self.recording_enabled = self.band_config.recording_enabled
 		self.audio_sample_rate = self.recording_config.audio_sample_rate
 		self.buffer_size_seconds = self.recording_config.buffer_size_seconds
@@ -157,18 +174,23 @@ class RadioScanner:
 		# SDR device
 		self.sdr: typing.Any | None = None
 
-		# Pre-computed values (initialized in _precompute_fft_params)
+		# Pre-computed values (populated by _precompute_fft_params before any
+		# hot-path method runs).  These use empty-array sentinels instead of
+		# Optional so downstream code doesn't need None-guards everywhere —
+		# _precompute_fft_params always overwrites them before first use.
 		self.samples_per_slice: int = 0
 		self.fft_size: int = 0
-		self.window: numpy.typing.NDArray[numpy.float64] | None = None
-		self.freqs: numpy.typing.NDArray[numpy.float64] | None = None
+		self.window: numpy.typing.NDArray[numpy.float64] = numpy.empty(0, dtype=numpy.float64)
+		self.freqs: numpy.typing.NDArray[numpy.float64] = numpy.empty(0, dtype=numpy.float64)
 		self.channel_indices: dict[float, tuple[int, int]] = {}
-		self.channel_bin_starts: numpy.typing.NDArray[numpy.int32] | None = None
-		self.channel_bin_ends: numpy.typing.NDArray[numpy.int32] | None = None
+		self.channel_bin_starts: numpy.typing.NDArray[numpy.int32] = numpy.empty(0, dtype=numpy.int32)
+		self.channel_bin_ends: numpy.typing.NDArray[numpy.int32] = numpy.empty(0, dtype=numpy.int32)
 		self.channel_dc_masks: list[numpy.typing.NDArray[numpy.bool_] | None] = []
 		self.channel_list_index: dict[float, int] = {}
 		self.noise_indices: list[tuple[int, int]] = []
-		self.dc_mask: numpy.typing.NDArray[numpy.bool_] | None = None
+		self.dc_mask: numpy.typing.NDArray[numpy.bool_] = numpy.empty(0, dtype=numpy.bool_)
+		# noise_mask is genuinely optional — only populated when the band has
+		# gap regions between channels suitable for noise estimation.
 		self.noise_mask: numpy.typing.NDArray[numpy.bool_] | None = None
 		self.channel_filter_sos: numpy.typing.NDArray[numpy.float64] | None = None
 
@@ -438,7 +460,7 @@ class RadioScanner:
 
 		gap_hz = (first_channel_low - noise_start_freq) / 1e3
 		if first_channel_idx > band_start_idx:
-			self.noise_indices.append((band_start_idx, first_channel_idx))
+			self.noise_indices.append((int(band_start_idx), int(first_channel_idx)))
 			logger.debug(f"Edge margin BEFORE first channel: {gap_hz:.1f} kHz ({first_channel_idx - band_start_idx} bins)")
 		else:
 			logger.debug(f"No gap before first channel (gap would be {gap_hz:.1f} kHz)")
@@ -466,7 +488,7 @@ class RadioScanner:
 			if idx_end > idx_start:
 
 				gap_hz = (ch2_low - ch1_high) / 1e3
-				self.noise_indices.append((idx_start, idx_end))
+				self.noise_indices.append((int(idx_start), int(idx_end)))
 				inter_channel_gaps += 1
 				logger.debug(f"Inter-channel gap {inter_channel_gaps}: {gap_hz:.1f} kHz ({idx_end - idx_start} bins)")
 
@@ -484,7 +506,7 @@ class RadioScanner:
 
 		if band_end_idx > last_channel_idx:
 
-			self.noise_indices.append((last_channel_idx, band_end_idx))
+			self.noise_indices.append((int(last_channel_idx), int(band_end_idx)))
 			logger.debug(f"Edge margin AFTER last channel: {gap_hz:.1f} kHz ({band_end_idx - last_channel_idx} bins)")
 
 		else:
@@ -639,9 +661,16 @@ class RadioScanner:
 
 		# Use the actual rate the device applied (may differ from requested
 		# for devices with discrete supported rates, e.g., AirSpy HF+).
-		if self.sdr.sample_rate != self.sample_rate:
-			logger.info(f"Using device sample rate: {self.sdr.sample_rate/1e6:.3f} MHz (requested {self.sample_rate/1e6:.3f} MHz)")
-			self.sample_rate = self.sdr.sample_rate
+		# The getter is typed as `float | None` on BaseDevice to allow a
+		# "not yet set" state before open(), but we've just assigned to it
+		# so a None here would indicate a driver bug.  Narrow via a local.
+		device_rate = self.sdr.sample_rate
+		if device_rate is not None and device_rate != self.sample_rate:
+			logger.info(
+				f"Using device sample rate: {device_rate/1e6:.3f} MHz "
+				f"(requested {self.sample_rate/1e6:.3f} MHz)"
+			)
+			self.sample_rate = device_rate
 
 		self.sdr.center_freq = self.center_freq
 
@@ -700,6 +729,12 @@ class RadioScanner:
 		Safely put samples in queue, dropping them if queue is full
 		This runs on the event loop thread, not the callback thread
 		"""
+
+		# sample_queue is created in scan() before the SDR reader thread is
+		# started, so it cannot be None here at runtime.  The assert narrows
+		# the Optional for mypy.
+		assert self.sample_queue is not None
+
 		try:
 			self.sample_queue.put_nowait(samples)
 		except asyncio.QueueFull:
@@ -731,10 +766,16 @@ class RadioScanner:
 		"""
 		logger.info(f"Time slice: {self.band_time_slice_ms} ms ({self.samples_per_slice} samples)")
 
+		# sample_queue is created in scan() before this async generator is
+		# entered, so it cannot be None here.  The assert narrows the
+		# Optional for mypy on the two accesses inside the loop below.
+		assert self.sample_queue is not None
+		sample_queue = self.sample_queue
+
 		while True:
 			# Get samples from queue (filled by background thread).
 			# A None sentinel signals that the streaming task has ended.
-			samples = await self.sample_queue.get()
+			samples = await sample_queue.get()
 			if samples is None:
 				return
 			yield samples
@@ -950,7 +991,7 @@ class RadioScanner:
 			if channel_bins.size == 0:
 				return -numpy.inf
 
-		return numpy.mean(channel_bins)
+		return float(numpy.mean(channel_bins))
 
 	def _segment_power_variance (self, channel_freq: float, segment_psds: list[numpy.typing.NDArray[numpy.float64]]) -> float:
 
@@ -1200,7 +1241,16 @@ class RadioScanner:
 		start_time = time.perf_counter()
 		try:
 			# Phase 1: sanity check for ADC saturation.
-			clipping_threshold = 0.95
+			# The threshold is scaled by the device's calibration factor —
+			# some SDR wrappers (notably the SoapySDR AirSpy HF+ path)
+			# multiply raw IQ samples by a normalisation factor so that
+			# weak signals fall in a sensible amplitude range.  Without
+			# this scaling, the 0.95 threshold would treat ordinary
+			# normalised samples as clipping and produce false positives
+			# whose downstream effect is broadband spectral leakage and
+			# false-channel detections.
+			device_iq_scale = float(getattr(self.sdr, 'iq_scale', 1.0))
+			clipping_threshold = 0.95 * device_iq_scale
 			# Subsample to keep the check cheap for large slices.
 			subsample_step = max(1, len(samples) // 4096)
 			subsamples = samples[::subsample_step]
@@ -1209,6 +1259,19 @@ class RadioScanner:
 				(subsamples.imag > clipping_threshold) | (subsamples.imag < -clipping_threshold)
 			)
 			clipping_percentage = clipping_count / len(subsamples) * 100
+
+			# Heavy clipping → drop the slice entirely.  Distorted samples
+			# produce broadband intermodulation that leaks across the
+			# channel grid and causes false detections at the wrong
+			# frequency, so it's safer to skip this slice than to push
+			# garbage through the rest of the pipeline.
+			if clipping_percentage > 5.0:
+				logger.warning(
+					f"ADC SATURATION: {clipping_percentage:.1f}% samples clipping. "
+					f"Dropping slice to prevent false detections.  Reduce gain."
+				)
+				self.sample_counter += len(samples)
+				return
 
 			if clipping_percentage > 0.1:
 				logger.warning(f"ADC SATURATION: {clipping_percentage:.1f}% samples clipping. Reduce gain.")
@@ -1411,16 +1474,26 @@ class RadioScanner:
 		try:
 			self._setup_sdr()
 
-			# Initialize async components
-			self.loop = asyncio.get_running_loop()
+			# _setup_sdr() always assigns self.sdr — narrow the Optional
+			# here so the nested closure and the processing loop below can
+			# reference the device without triggering mypy's union checks.
+			assert self.sdr is not None, "_setup_sdr should have created the device"
+			sdr = self.sdr
+
+			# Initialize async components.  We bind local references so the
+			# nested start_streaming() closure and the processing loop below
+			# can use them without triggering mypy's Optional complaints on
+			# self.loop / self.sample_queue.
+			loop = asyncio.get_running_loop()
+			self.loop = loop
 			self.sample_queue = asyncio.Queue(maxsize=self.sample_queue_maxsize)
 
 			# Start async SDR streaming in background thread (non-blocking)
 			# This must run in an executor because read_samples_async blocks
 			async def start_streaming () -> None:
-				await self.loop.run_in_executor(
+				await loop.run_in_executor(
 					None,
-					self.sdr.read_samples_async,
+					sdr.read_samples_async,
 					self._sdr_callback,
 					self.samples_per_slice
 				)
@@ -1443,11 +1516,11 @@ class RadioScanner:
 
 			async for samples in self._sample_band_async():
 				# CPU-heavy processing stays off the event loop to keep async I/O responsive.
-				await self.loop.run_in_executor(
+				await loop.run_in_executor(
 					None,
 					self._process_samples,
 					samples,
-					self.loop
+					loop
 				)
 
 		except KeyboardInterrupt:

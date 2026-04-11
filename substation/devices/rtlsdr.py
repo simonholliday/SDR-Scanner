@@ -110,8 +110,12 @@ class RtlSdrDevice (substation.devices.base.BaseDevice):
 			# Get serial for our device index
 			if 0 <= self._device_index < len(serials):
 				serial = serials[self._device_index]
-		except Exception:
-			# Some RTL-SDR dongles don't have readable serial numbers
+		except (OSError, AttributeError, IndexError, ValueError) as exc:
+			# Some RTL-SDR dongles don't have readable serial numbers;
+			# the librtlsdr call can also fail on USB enumeration races
+			# or when the driver version is missing the accessor.  Log
+			# at DEBUG so production runs stay quiet.
+			logger.debug(f"Could not read RTL-SDR serial: {exc}")
 			serial = None
 
 		# Convert bytes to string if necessary

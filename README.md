@@ -150,7 +150,7 @@ A high-dynamic-range VHF/UHF receiver with a 12-bit ADC (≈16-bit effective fro
 | Sample rates       | Discrete: 2.5 MHz or 10 MHz                                                   |
 | ADC resolution     | 12-bit (≈16-bit effective from oversampling)                                  |
 | Gain architecture  | LNA + Mixer + VGA (per-element control via `sdr_gain_elements`)               |
-| AGC                | Hardware AGC via SoapySDR                                                     |
+| AGC                | None — `sdr_gain_db: auto` is mapped to a fixed manual default (see below)    |
 | Driver             | SoapySDR + `soapysdr-module-airspy` (system package)                          |
 | `--device-type`    | `airspy`, `airspy-r2`, `airspyr2`                                             |
 | Best for           | High-quality VHF/UHF, wide single-band capture, weak-signal work              |
@@ -159,12 +159,13 @@ A high-dynamic-range VHF/UHF receiver with a 12-bit ADC (≈16-bit effective fro
 
 **Recommended starting config**
 - `snr_threshold_db: 6` (the higher sensitivity makes the RTL default 4.5 dB too noisy)
-- `sdr_gain_db: auto` to start; only move to per-element tuning if you need to optimise noise figure
+- `sdr_gain_db: auto` is fine to start with — see the AGC gotcha below for what it actually does
 - `activation_variance_db: 3.0`
 - `sample_rate: 2.5e6` for narrow bands, `10e6` for wide ones
 
 **Gotchas**
 - **Sample rates are discrete.** Asking for anything other than 2.5 MHz or 10 MHz silently snaps to the nearest supported rate and logs a warning. Always check the startup log to confirm the rate the device actually accepted.
+- **`sdr_gain_db: auto` is not real AGC.** SoapyAirspy reports `hasGainMode == True` but the underlying R2 hardware does not provide a working closed-loop AGC. Substation detects this and falls back to a fixed manual gain of `LNA=10, MIX=5, VGA=12` (27 dB total) — the same LNA-first values you would set by hand. This works well for typical PMR / VHF / UHF reception. If you want different values, set `sdr_gain_db` (numeric) or `sdr_gain_elements` (per-stage dict) explicitly in your band config.
 - For per-element tuning, **maximise LNA first**, set Mixer moderate, fine-tune with VGA (this is the LNA-first principle described in [Gain Tuning](#gain-tuning) below). The element names and ranges are logged at INFO level when the device starts up.
 - Requires a venv built with `--system-site-packages`.
 

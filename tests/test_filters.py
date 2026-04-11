@@ -1,5 +1,7 @@
 """Tests for decimation, filtering, and fade curves."""
 
+import logging
+
 import numpy
 import pytest
 
@@ -63,6 +65,79 @@ class TestDecimateIQ:
 		out, _ = substation.dsp.filters.decimate_iq(signal, sr, target, {})
 		assert out.dtype == numpy.complex64
 		assert len(out) > 0
+
+
+class TestDecimateCommonBackstop:
+
+	"""
+	Regression tests for the defensive backstop in _decimate_common.
+
+	The rational-resample path can be asked to design a polyphase filter
+	of length ~20 * max(up, down), and for coprime sample/target rates
+	that blows up — 2.5 MHz → 64103 Hz coprime would allocate ~50 million
+	taps and lock the system up.  The backstop refuses any call where
+	max(up, down) > _RESAMPLE_MAX_FACTOR, logs a clear error, and returns
+	an empty array.  This test pokes the backstop directly so it's not
+	dead code in CI.
+	"""
+
+	def test_refuses_pathological_ratio_and_returns_empty (self, caplog):
+
+		"""
+		sample_rate=2_500_000 → target_rate=64_103 is the exact pathological
+		case that motivated the backstop: gcd = 1, so up=64_103, down=2_500_000,
+		max(up, down) = 2_500_000 which is well past the 100_000 cap.
+		"""
+
+		signal = numpy.zeros(1024, dtype=numpy.complex64)
+
+		with caplog.at_level(logging.ERROR, logger='substation.dsp.filters'):
+			out, _ = substation.dsp.filters.decimate_iq(
+				signal, 2_500_000, 64_103, {}
+			)
+
+		assert out.size == 0
+		assert out.dtype == numpy.complex64
+
+		error_messages = [
+			r.getMessage() for r in caplog.records
+			if 'Refusing pathological resample' in r.getMessage()
+		]
+		assert len(error_messages) == 1
+
+	def test_preserves_real_dtype_on_refusal (self, caplog):
+
+		"""
+		When given a real (float32) input, the backstop should still
+		return an empty array with matching dtype so downstream .astype
+		calls don't unexpectedly widen.
+		"""
+
+		signal = numpy.zeros(1024, dtype=numpy.float32)
+
+		with caplog.at_level(logging.ERROR, logger='substation.dsp.filters'):
+			out, _ = substation.dsp.filters.decimate_audio(
+				signal, 2_500_000, 64_103, {}
+			)
+
+		assert out.size == 0
+		assert out.dtype == numpy.float32
+
+	def test_normal_rational_resample_not_refused (self):
+
+		"""
+		A normal rational resample (2.4 MHz → 48 kHz) must still succeed —
+		the backstop threshold should be well above typical config values.
+		"""
+
+		rng = numpy.random.default_rng(0)
+		signal = rng.standard_normal(2400).astype(numpy.complex64)
+
+		out, _ = substation.dsp.filters.decimate_iq(signal, 2_400_000, 48_000, {})
+
+		# 2.4 MHz / 48 kHz = 50, exact integer divisor → integer path
+		assert len(out) > 0
+		assert out.dtype == numpy.complex64
 
 
 # ---------------------------------------------------------------------------

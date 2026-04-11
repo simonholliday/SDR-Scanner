@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 # Track which resampling ratios have already been warned about to avoid log spam
 _RESAMPLE_WARNED_RATIOS: set[tuple[int, int]] = set()
 
+# Refuse to call resample_poly when the polyphase filter would be larger than
+# this many taps.  scipy designs a filter of length 2*10*max(up,down)+1 inside
+# resample_poly, so a max(up,down) of 100_000 caps the filter at ~2 million
+# taps (~16 MB of float64).  Anything beyond this is almost certainly a config
+# bug — for example, sample_rate=2500000 with audio_sample_rate=16000 and a
+# coprime intermediate IF rate produces max(up,down)=2500000, which would
+# allocate a 400 MB filter and lock the system up.  When this triggers we log
+# a clear error and return zero-length output rather than try to do the
+# allocation.
+_RESAMPLE_MAX_FACTOR = 100_000
+
 
 def _decimate_common (
 	signal: numpy.typing.NDArray,
@@ -61,22 +72,47 @@ def _decimate_common (
 	decimation_factor = sr // ar
 
 	if sr % ar != 0:
-		# Warn once per process for each unique ratio to avoid log spam on every channel activation
-		ratio = (sr, ar)
-		if ratio not in _RESAMPLE_WARNED_RATIOS:
-			logger.warning(
-				f"Non-integer resample ratio: {sr} -> {ar} Hz. "
-				"Prefer a sample_rate that is an integer multiple of target rate for lower CPU."
-			)
-			_RESAMPLE_WARNED_RATIOS.add(ratio)
-
 		# Rational resampling: upsample by 'up', then downsample by 'down'
 		# Example: 2 MHz -> 48 kHz is not integer-divisible
 		# GCD(2000000, 48000) = 16000, so up=3, down=125
 		g = math.gcd(sr, ar)
 		up = ar // g
 		down = sr // g
-		
+
+		# Warn only when the polyphase filter is large enough to actually
+		# matter for CPU.  scipy designs a filter of length ~2*10*max(up,down),
+		# so max(up,down)>1000 means a 20k+ tap filter — worth flagging.
+		# Below that the resampling is essentially free, and warning would
+		# spam the logs on every channel activation for sample rates where
+		# the user has no choice (e.g. AirSpy R2 fixed at 2.5 / 10 MHz).
+		# The pathological cases (max>100_000) are caught by the backstop
+		# below regardless.
+		if max(up, down) > 1_000:
+			ratio = (sr, ar)
+			if ratio not in _RESAMPLE_WARNED_RATIOS:
+				logger.warning(
+					f"Non-integer resample ratio: {sr} -> {ar} Hz "
+					f"(up={up}, down={down}, ~{2 * 10 * max(up, down) + 1} tap filter).  "
+					"Prefer a sample_rate that is an integer multiple of target rate "
+					"for lower CPU."
+				)
+				_RESAMPLE_WARNED_RATIOS.add(ratio)
+
+		# Defensive backstop: refuse to design a polyphase filter so large
+		# that scipy.signal.resample_poly would block / OOM.  Coprime
+		# rates (g==1) are the failure mode — e.g. sr=2500000 paired with
+		# a non-divisor IF rate.  Returning empty output is preferable to
+		# locking up the system; the demodulator can recover on the next
+		# block once the call site has been fixed.
+		if max(up, down) > _RESAMPLE_MAX_FACTOR:
+			logger.error(
+				f"Refusing pathological resample {sr} -> {ar} Hz "
+				f"(up={up}, down={down}, max={max(up, down)} > {_RESAMPLE_MAX_FACTOR}).  "
+				f"This is almost certainly a configuration bug — pick a target rate "
+				f"with a small-gcd ratio to the source rate."
+			)
+			return numpy.array([], dtype=signal.dtype), state
+
 		prev_key = f'{state_prefix}resample_prev'
 		ratio_key = f'{state_prefix}resample_ratio'
 		taps_key = f'{state_prefix}resample_taps_len'

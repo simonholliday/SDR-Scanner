@@ -28,8 +28,17 @@ NFM_DEVIATION_HZ = 2.5e3  # 2.5 kHz peak deviation
 NFM_IF_OVERSAMPLE = 4.0
 
 # ==============================================================================
-# AM (Amplitude Modulation) AGC Constants
+# AM (Amplitude Modulation) Demodulation Constants
 # ==============================================================================
+
+# Oversampling factor for Intermediate Frequency (IF) decimation in AM.
+# Currently 4.0, matching NFM_IF_OVERSAMPLE, but kept as a separate
+# constant because the *reason* is different: for AM the IF stage just
+# needs enough headroom above the audio Nyquist for the envelope to track
+# without aliasing (AM voice is ~5 kHz wide, so 64 kHz IF is generous).
+# Having its own name means you can tune AM and NFM independently in the
+# future without the change silently affecting the other demodulator.
+AM_IF_OVERSAMPLE = 4.0
 
 # Automatic Gain Control (AGC) compensates for varying signal strengths
 # Too-fast AGC sounds "pumpy", too-slow AGC doesn't adapt quickly enough

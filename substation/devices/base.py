@@ -91,6 +91,16 @@ class BaseDevice (abc.ABC):
 	All device implementations must provide these properties and methods.
 	"""
 
+	# Multiplicative factor that the wrapper applies to raw IQ samples
+	# before delivering them to the scanner.  Defaults to 1.0 (no scaling).
+	# The SoapySDR wrapper sets this to whatever calibration factor it
+	# computed at startup, so the scanner can interpret amplitudes
+	# correctly — for example, the ADC saturation check needs to know
+	# whether a 0.95-amplitude post-wrapper sample corresponds to a
+	# real 0.95-amplitude raw sample (iq_scale==1.0) or to a much
+	# smaller raw sample that has been amplified during normalisation.
+	iq_scale: float = 1.0
+
 	@property
 	@abc.abstractmethod
 	def sample_rate (self) -> float | None:

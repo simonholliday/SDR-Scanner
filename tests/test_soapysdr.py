@@ -167,15 +167,40 @@ class TestSoapySdrProperties:
 		mock_device.setFrequency.assert_called_with(mock_soapy.SOAPY_SDR_RX, 0, 446e6)
 		assert sdr_device.center_freq == 446e6
 
-	def test_gain_auto (self):
+	def test_gain_auto_non_airspy_uses_agc (self):
 
-		"""Setting gain to 'auto' should enable AGC."""
+		"""Setting gain to 'auto' on a device that genuinely supports AGC
+		should enable AGC mode (not the airspy fallback path)."""
 
-		sdr_device, mock_device, mock_soapy = _create_soapy_device()
+		# Use a non-airspy driver so the airspy-specific fallback is skipped
+		sdr_device, mock_device, mock_soapy = _create_soapy_device(driver='lime')
 
 		sdr_device.gain = 'auto'
 		mock_device.setGainMode.assert_called_with(mock_soapy.SOAPY_SDR_RX, 0, True)
 		assert sdr_device.gain == 'auto'
+
+	def test_gain_auto_airspy_fallback_to_per_element (self):
+
+		"""On AirSpy R2 ('airspy' driver), 'auto' must NOT call setGainMode(True)
+		— SoapyAirspy reports AGC support but the underlying R2 hardware AGC
+		does nothing.  Instead the wrapper sets per-element gain values
+		(LNA=10, MIX=5, VGA=12) and disables AGC mode."""
+
+		sdr_device, mock_device, mock_soapy = _create_soapy_device(driver='airspy')
+
+		sdr_device.gain = 'auto'
+
+		# AGC mode must be DISABLED (False), not enabled — this is the
+		# critical regression check.
+		mock_device.setGainMode.assert_any_call(mock_soapy.SOAPY_SDR_RX, 0, False)
+
+		# Per-element gain values must be applied
+		mock_device.setGain.assert_any_call(mock_soapy.SOAPY_SDR_RX, 0, 'LNA', 10.0)
+		mock_device.setGain.assert_any_call(mock_soapy.SOAPY_SDR_RX, 0, 'MIX', 5.0)
+		mock_device.setGain.assert_any_call(mock_soapy.SOAPY_SDR_RX, 0, 'VGA', 12.0)
+
+		# Reported gain state reflects the per-element nature
+		assert sdr_device.gain_elements == {'LNA': 10.0, 'MIX': 5.0, 'VGA': 12.0}
 
 	def test_gain_numeric (self):
 
@@ -190,9 +215,9 @@ class TestSoapySdrProperties:
 
 	def test_gain_auto_no_agc_fallback (self):
 
-		"""If device doesn't support AGC, should fall back to midpoint gain."""
+		"""If a non-airspy device doesn't support AGC, fall back to midpoint gain."""
 
-		sdr_device, mock_device, mock_soapy = _create_soapy_device()
+		sdr_device, mock_device, mock_soapy = _create_soapy_device(driver='lime')
 		mock_device.hasGainMode.return_value = False
 
 		sdr_device.gain = 'auto'
