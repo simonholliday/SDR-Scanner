@@ -25,7 +25,7 @@ By connecting a supported USB receiver (like an RTL-SDR or HackRF), you can scan
     - [OSC event forwarding](#osc-event-forwarding)
 - [Configuration](#configuration)
 - [SoapySDR Installation](#soapysdr-installation-airspy-and-other-devices)
-- [Broadcast WAV & Metadata](#broadcast-wav-bwf-metadata)
+- [Broadcast WAV Metadata](#broadcast-wav-metadata)
 - [Gain Tuning](#gain-tuning)
 - [Rejecting Empty/Noise Recordings](#rejecting-emptynoise-recordings)
 - [Dynamics Curve (Experimental)](#dynamics-curve-experimental)
@@ -509,7 +509,7 @@ The Python virtual environment **must** be created with `--system-site-packages`
 python3 -m venv --system-site-packages /home/si/venvs/substation
 ```
 
-## Broadcast WAV (BWF) & Metadata
+## Broadcast WAV Metadata
 Each recording captures industry-standard **Broadcast WAV (BWF)** metadata (EBU Tech 3285). This embeds technical details directly into the audio file, making it ideal for archival and automated post-processing.
 
 **Compatibility**: These are standard `.wav` files. They will play perfectly in any normal audio player (VLC, Windows Media Player, Audacity, mobile devices, etc.).
