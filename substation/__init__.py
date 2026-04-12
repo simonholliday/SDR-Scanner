@@ -11,8 +11,12 @@ Supported hardware:
 
 Features:
 - Automatic channel detection using SNR (Signal-to-Noise Ratio) with
-  hysteresis and temporal variance checks to reject stationary noise
-- Demodulation of NFM, AM, and SSB (USB/LSB via Weaver's method)
+  hysteresis and three-layer noise rejection (RF variance, audio spectral
+  flatness, post-recording flatness check) to eliminate false recordings
+- Audio silence timeout to stop recording when an AM carrier persists
+  after voice ends
+- Demodulation of NFM, AM, and SSB (USB/LSB via Weaver's method) with
+  streaming polyphase FIR resampler for artifact-free block processing
 - Automatic per-channel recording with spectral-subtraction noise
   reduction and optional experimental dynamics-curve expander
 - PPM frequency calibration against a known reference signal

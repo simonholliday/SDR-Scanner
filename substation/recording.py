@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import json
 import logging
+import math
 import os
 import struct
 import threading
@@ -98,7 +99,7 @@ class ChannelRecorder:
 
 		Args:
 			channel_freq: Channel center frequency in Hz (e.g., 446.00625e6)
-			channel_index: Channel number for display (e.g., 0 for PMR channel 1)
+			channel_index: Channel number for display (1-based, e.g., 1 for PMR channel 1)
 			band_name: Name of the band (e.g., 'pmr', 'airband')
 			audio_sample_rate: Output audio sample rate in Hz (e.g., 16000)
 			buffer_size_seconds: Maximum buffer size in seconds (prevents unbounded memory growth)
@@ -131,7 +132,7 @@ class ChannelRecorder:
 		self.modulation = modulation
 		# Precompute soft limiter parameters for efficiency
 		self.soft_limit_drive = max(0.1, float(soft_limit_drive))
-		self.soft_limit_scale = 1.0 / numpy.tanh(self.soft_limit_drive)
+		self.soft_limit_scale = 1.0 / math.tanh(self.soft_limit_drive)
 		self.noise_reduction_enabled = noise_reduction_enabled
 		self.dynamics_curve_enabled = dynamics_curve_enabled
 		self.dynamics_curve_config = dynamics_curve_config
@@ -470,7 +471,7 @@ class ChannelRecorder:
 		logger.debug(f"Stopped recording channel {self.channel_index} (f = {self.channel_freq/1e6:.5f} MHz) - Duration: {duration_seconds:.1f}s, File: {self.filepath}")
 
 	@staticmethod
-	def check_empty (filepath: str, flatness_threshold: float = 0.15) -> bool:
+	def check_empty (filepath: str, flatness_threshold: float | None = None) -> bool:
 
 		"""
 		Return True if the finished recording is "empty" (noise-only).
@@ -489,6 +490,10 @@ class ChannelRecorder:
 
 		if len(data) < 512:
 			return True
+
+		if flatness_threshold is None:
+			import substation.constants
+			flatness_threshold = substation.constants.SPECTRAL_FLATNESS_THRESHOLD
 
 		import scipy.signal as _sig
 		freqs, psd = _sig.welch(data, sr, nperseg=min(2048, len(data)))

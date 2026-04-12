@@ -96,6 +96,8 @@ def _streaming_rational_resample (
 	x = numpy.concatenate([buf, signal])
 	n_in = len(signal)
 
+	# Worst-case output is up extra samples beyond the ratio estimate
+	# (when the phase alignment produces one extra output cycle).
 	n_out_estimate = int(numpy.ceil((n_in - offset) * up / down))
 	out = numpy.empty(max(0, n_out_estimate + up), dtype=signal.dtype)
 
@@ -116,6 +118,9 @@ def _streaming_rational_resample (
 
 	state[buf_key] = x[-sub_len:].copy()
 	state[phase_key] = phase
+	# Positive offset = how many input samples past the buffer end the
+	# next output sample's position falls.  On the next call, the loop
+	# starts at buf_len + offset, correctly skipping into the new data.
 	state[offset_key] = i - len(x)
 
 	result = out[:k]

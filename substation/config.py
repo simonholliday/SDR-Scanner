@@ -261,6 +261,24 @@ class RecordingConfig(pydantic.BaseModel):
 			Higher = more compression of loud signals. 2.0 is moderate limiting.
 			Prevents clipping while maintaining some dynamic range.
 
+		noise_reduction_enabled: Toggle spectral-subtraction noise reduction
+			on recorded audio.  Default: True.
+
+		recording_hold_time_ms: Duration in ms to continue recording after
+			signal drops below threshold (RF hold time).  Default: 500.
+
+		discard_empty_enabled: Automatically discard noise-only recordings
+			using spectral flatness.  Applies at turn-ON (Gate 2) and
+			turn-OFF (Gate 3b).  Default: True.
+
+		min_recording_seconds: Discard recordings shorter than this duration.
+			Catches brief transients (radar, ignition).  Set to 0 to
+			disable.  Default: 0.5.
+
+		audio_silence_timeout_ms: Stop recording when demodulated audio has
+			been silent for this duration, even if the RF carrier persists
+			(common on AM airband).  Set to 0 to disable.  Default: 3000.
+
 		dynamics_curve_enabled: Whether to apply the experimental dynamics-curve
 			noise reduction stage to recorded audio.  Disabled by default; see
 			DynamicsCurveConfig and apply_dynamics_curve for details.
@@ -281,6 +299,8 @@ class RecordingConfig(pydantic.BaseModel):
 	noise_reduction_enabled: bool = pydantic.Field(default=True)
 	recording_hold_time_ms: float = pydantic.Field(default=500.0, ge=0.0)
 	discard_empty_enabled: bool = pydantic.Field(default=True)
+	min_recording_seconds: float = pydantic.Field(default=0.5, ge=0.0)
+	audio_silence_timeout_ms: float = pydantic.Field(default=3000.0, ge=0.0)
 	dynamics_curve_enabled: bool = pydantic.Field(default=False)
 	dynamics_curve: DynamicsCurveConfig = pydantic.Field(default_factory=DynamicsCurveConfig)
 

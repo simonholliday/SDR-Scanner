@@ -442,6 +442,8 @@ recording:
 - `noise_reduction_enabled`: toggle spectral subtraction noise reduction (default: true).
 - `recording_hold_time_ms`: duration in ms to continue recording after signal drops below threshold (default: 500).
 - `discard_empty_enabled`: automatically discard noise-only recordings using spectral flatness analysis (default: true). Applies at two points: before activation (rejects noise triggers without starting a recording) and after recording close (catches recordings that became mostly noise). See [Rejecting empty/noise recordings](#rejecting-emptynoise-recordings).
+- `min_recording_seconds`: discard recordings shorter than this duration (default: 0.5). Catches brief transients (radar pulses, ignition noise) that pass the spectral checks but produce useless sub-second files. Set to `0` to disable.
+- `audio_silence_timeout_ms`: stop recording when demodulated audio has been silent for this duration (default: 3000). Catches AM carriers that persist after voice stops, where RF SNR stays above threshold but there is no useful content. Set to `0` to disable and rely on RF-only detection.
 
 Band Defaults
 ```
@@ -477,7 +479,7 @@ Per-band keys:
 - `sdr_gain_db`: numeric or `auto`.
 - `sdr_gain_elements`: optional dict mapping gain element names to dB values for per-stage control (e.g., `{LNA: 10, MIX: 5, VGA: 12}`). Available elements are logged at startup. Takes priority over `sdr_gain_db`.
 - `sdr_device_settings`: optional dict of device-specific settings passed via SoapySDR (e.g., `{biastee: "true"}`). Available settings are logged at DEBUG level on startup.
-- `exclude_channel_indices`: 0-based indices to skip (no analysis, no recording).
+- `exclude_channel_indices`: 1-based channel numbers to skip (no analysis, no recording). These match the channel numbers shown in log output and filenames.
 
 ## SoapySDR Installation (AirSpy and other devices)
 
@@ -598,7 +600,8 @@ After the WAV file is closed, the scanner reads it back and computes spectral fl
 | :--- | :--- | :--- | :--- | :--- |
 | 1. Variance | RF PSD | Turn-ON | Broadband stationary noise | ~0.1 ms |
 | 2. Flatness (preview) | Demodulated audio | Turn-ON | Narrowband noise that passes Gate 1 | ~10-20 ms |
-| 3. Flatness (whole file) | Demodulated audio | Turn-OFF | Recordings that started real but became mostly noise | ~10-20 ms |
+| 3a. Min duration | Recording metadata | Turn-OFF | Brief transients (radar, ignition) that pass spectral checks | ~0 ms |
+| 3b. Flatness (whole file) | Demodulated audio | Turn-OFF | Recordings that started real but became mostly noise | ~10-20 ms |
 
 ### Example
 
@@ -634,9 +637,10 @@ bands:
 | :--- | :--- |
 | `snr_threshold_db` | Runs first. Channels below the SNR threshold never reach the noise gates. |
 | `activation_variance_db` | Gate 1, only on turn-on transitions, only when the SNR check passed. |
-| `discard_empty_enabled` | Gates 2 and 3. Gate 2 runs after Gate 1 passes. Gate 3 runs on recording close. |
+| `discard_empty_enabled` | Gates 2 and 3b. Gate 2 runs after Gate 1 passes. Gate 3b runs on recording close. |
+| `min_recording_seconds` | Gate 3a. Runs on recording close, before Gate 3b. Set to `0` to disable. |
 | Hysteresis (built-in 3 dB margin) | Unchanged. Once a recording starts, it continues until SNR drops below `snr_threshold_db - 3`. |
-| Hold time (`recording_hold_time_ms`) | Unchanged. Brief drops in SNR during active recording are tolerated. Gate 3 may discard if the hold timer extends the recording far beyond the actual signal. |
+| Hold time (`recording_hold_time_ms`) | Unchanged. Brief drops in SNR during active recording are tolerated. Gate 3b may discard if the hold timer extends the recording far beyond the actual signal. |
 
 All three gates suppress silently — no ON callback fires, no recording file is kept. Downstream consumers (OSC bridge, user scripts) only see activations and recordings that passed all applicable gates.
 
@@ -657,7 +661,7 @@ Gate 1 suppression is logged at **DEBUG** level:
 Channel 18 suppressed: power variance 0.4 dB below threshold 3.0 dB (likely noise)
 ```
 
-Gate 2 suppression is logged at **INFO** level:
+Gate 2 suppression is logged at **DEBUG** level:
 ```
 Channel 18 suppressed: audio is noise-only (spectral flatness 0.38)
 ```

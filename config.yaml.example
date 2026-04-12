@@ -44,11 +44,23 @@ recording:
     # Soft limiter drive for post-processing; 1.5–3.0 is typical (higher = stronger limiting)
     soft_limit_drive: 1.25
 
+    # Audio silence timeout in milliseconds.  Stops recording when demodulated
+    # audio has been silent for this long, even if the RF carrier is still
+    # present (common on AM airband where the carrier persists after voice
+    # stops).  Set to 0 to rely on RF-only detection.
+    audio_silence_timeout_ms: 3000
+
     # Discard noise-only recordings automatically using spectral flatness
     # analysis.  Applies at turn-ON (rejects noise triggers before recording
     # starts) and at turn-OFF (discards files that became mostly noise).
     # See README.md "Rejecting empty/noise recordings" for details.
     discard_empty_enabled: true
+
+    # Minimum recording duration in seconds.  Recordings shorter than this
+    # are deleted on close — catches brief transients (radar pulses, ignition
+    # noise) that pass spectral checks but produce useless files.  Set to 0
+    # to keep all recordings regardless of length.
+    min_recording_seconds: 0.5
 
     # Experimental: dual-region expander applied per-sample to recorded audio.
     # Cuts the level of quiet samples (downward expansion, suppresses noise)
@@ -121,7 +133,7 @@ bands:
         freq_start: 446.00625e+6
         freq_end: 446.19375e+6
         sample_rate: 1.024e6
-        exclude_channel_indices: [0, 1, 2]
+        exclude_channel_indices: [1, 2, 3]
 
     # Air
 
@@ -144,7 +156,7 @@ bands:
         freq_start: 125.5e+6
         freq_end: 126.0e+6
         sample_rate: 1.024e6
-        exclude_channel_indices: [25, 26, 33, 34]
+        exclude_channel_indices: [26, 27, 34, 35]
 
     # AirSpy HF+ Discovery — sensitive narrow-band receiver.
     # The HF+ is sensitive enough that the standard SNR threshold catches

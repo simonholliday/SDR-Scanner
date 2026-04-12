@@ -84,9 +84,10 @@ def _pick_if_decimation (sample_rate: float, audio_sample_rate: int, oversample:
 	candidates = [d for d in range(search_min, search_max + 1) if sr_int % d == 0]
 
 	if not candidates:
-		# Pathological — no integer divisor in the window.  Fall back to
-		# the rounded value; the rational-resample path will handle it
-		# (or the backstop in _decimate_common will refuse and warn).
+		logger.warning(
+			f"No integer divisor of {sr_int} in [{search_min}, {search_max}] — "
+			f"falling back to {ideal} (rational resample path)"
+		)
 		return ideal
 
 	# Prefer candidates whose resulting IF rate is also a clean multiple
@@ -463,7 +464,8 @@ def demodulate_ssb (
 	step = 2.0 * numpy.pi * shift_dir * f_o / audio_sample_rate
 	phases = step * sample_index + phase_offset
 	iq_shifted = iq_audio * numpy.exp(1j * phases).astype(numpy.complex64)
-	# Wrap to [0, 2π) so the float doesn't grow without bound.
+	# Wrap to [0, 2π) so the float doesn't grow without bound.  float64
+	# gives ~15 decimal digits — sufficient for months of continuous use.
 	state['ssb_shift_phase'] = float((phase_offset + step * n) % (2.0 * numpy.pi))
 
 	# 3. Low-pass filter at ±SSB_AUDIO_HALF_BW_HZ.

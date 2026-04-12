@@ -111,6 +111,7 @@ class RadioScanner:
 		self.fade_out_ms = self.recording_config.fade_out_ms
 		self.soft_limit_drive = self.recording_config.soft_limit_drive
 		self.hold_time_seconds = self.recording_config.recording_hold_time_ms / 1000.0
+		self.audio_silence_timeout = self.recording_config.audio_silence_timeout_ms / 1000.0
 		self.discard_empty_enabled = self.recording_config.discard_empty_enabled
 
 		self.can_demod = self.modulation in substation.dsp.demodulation.DEMODULATORS
@@ -124,29 +125,36 @@ class RadioScanner:
 
 		# Calculate all channel frequencies based on start/end/spacing
 		self.all_channels = self._calculate_channels()
-		# Allow user to exclude specific channels by index (e.g., skip known interference)
-		excluded_indices = set(self.band_config.exclude_channel_indices or [])
-		out_of_range = sorted(idx for idx in excluded_indices if idx >= len(self.all_channels))
+		# Allow user to exclude specific channels by 1-based index
+		# (matches the channel numbers shown in logs and filenames).
+		raw_excluded = set(self.band_config.exclude_channel_indices or [])
+		excluded_0based = {idx - 1 for idx in raw_excluded}
+		out_of_range = sorted(idx for idx in raw_excluded if idx < 1 or idx > len(self.all_channels))
 		if out_of_range:
 			logger.warning(
 				f"Ignoring out-of-range excluded channel indices for band '{band_name}': "
 				f"{', '.join(str(idx) for idx in out_of_range)}"
 			)
-			excluded_indices -= set(out_of_range)
+			excluded_0based -= {idx - 1 for idx in out_of_range}
 
 		self.channels = [
 			freq for idx, freq in enumerate(self.all_channels)
-			if idx not in excluded_indices
+			if idx not in excluded_0based
 		]
 		self.channel_original_indices = {
-			freq: idx for idx, freq in enumerate(self.all_channels)
-			if idx not in excluded_indices
+			freq: idx + 1 for idx, freq in enumerate(self.all_channels)
+			if idx not in excluded_0based
 		}
 		self.num_channels = len(self.channels)
 
 		# Track last time signal was above detection threshold for each channel
 		# Used for "Hold Time" (hang time) logic to prevent early truncation
 		self.channel_last_active_time: dict[float, float] = {ch_freq: 0.0 for ch_freq in self.channels}
+
+		# Track last time demodulated audio had content above the silence
+		# threshold.  Used to stop recording when a transmitter is keyed
+		# but silent (common on AM airband).
+		self.channel_audio_last_active: dict[float, float] = {}
 
 		# Calculate edge margin - add padding on each side to avoid filter rolloff
 		# Filters attenuate signals near the edge of the passband, so we need extra space
@@ -227,8 +235,8 @@ class RadioScanner:
 		logger.info(f"Initialized scanner for band '{band_name}'")
 		logger.info(f"Frequency range: {self.freq_start/1e6:.5f} - {self.freq_end/1e6:.5f} MHz")
 		logger.info(f"Number of channels: {self.num_channels}")
-		if excluded_indices:
-			excluded_list = ", ".join(str(idx) for idx in sorted(excluded_indices))
+		if raw_excluded:
+			excluded_list = ", ".join(str(idx) for idx in sorted(raw_excluded))
 			logger.info(f"Excluded channels: {excluded_list}")
 		logger.info(f"Center frequency: {self.center_freq/1e6:.5f} MHz")
 		logger.info(f"Required bandwidth: {self.required_bandwidth/1e6:.5f} MHz (inc. {self.band_edge_margin_hz/1e3:.1f}kHz edge margin)")
@@ -934,6 +942,7 @@ class RadioScanner:
 
 				# Record channel activity start for stuck detection.
 				self.channel_start_times[channel_freq] = time.time()
+				self.channel_audio_last_active[channel_freq] = time.time()
 
 				if channel_freq in self.channel_last_warning_times:
 					del self.channel_last_warning_times[channel_freq]
@@ -959,11 +968,8 @@ class RadioScanner:
 
 			if turning_on and self.can_record:
 
-				if channel_freq in self.channel_filter_zi:
-					del self.channel_filter_zi[channel_freq]
-
-				if channel_freq in self.channel_demod_state:
-					del self.channel_demod_state[channel_freq]
+				self.channel_filter_zi.pop(channel_freq, None)
+				self.channel_demod_state.pop(channel_freq, None)
 
 				self._start_channel_recording(channel_freq, channel_index, snr_db, loop)
 
@@ -1228,14 +1234,26 @@ class RadioScanner:
 
 		ch_idx = channel_recorder.channel_index
 		filepath = channel_recorder.filepath
+		duration = channel_recorder.total_samples_written / channel_recorder.audio_sample_rate
 
-		# Gate 3 (post-recording): discard if the WHOLE recording is
-		# noise-only.  This catches a different case than the turn-ON
-		# Gate 2 check: a signal that starts with real content (passes
-		# Gate 2) but where the bulk of the recording is noise — e.g. a
-		# brief transmission followed by hold-timer padding.  The
-		# spectral flatness of the full file may exceed the threshold
-		# even though the first block was clean.
+		# Gate 3a (minimum duration): discard recordings shorter than
+		# min_recording_seconds.  Brief transients (radar pulses,
+		# ignition noise) can pass Gates 1 and 2 but produce useless
+		# sub-second files.  Set to 0 in config to disable.
+		min_dur = self.recording_config.min_recording_seconds
+		if min_dur > 0 and duration < min_dur and os.path.exists(filepath):
+			os.remove(filepath)
+			logger.info(f"Discarded short recording ({duration:.2f}s < {min_dur:.1f}s): {os.path.basename(filepath)}")
+			del self.channel_recorders[channel_freq]
+			return
+
+		# Gate 3b (post-recording spectral flatness): discard if the
+		# WHOLE recording is noise-only.  This catches a different case
+		# than the turn-ON Gate 2 check: a signal that starts with real
+		# content (passes Gate 2) but where the bulk of the recording
+		# is noise — e.g. a brief transmission followed by hold-timer
+		# padding.  The spectral flatness of the full file may exceed
+		# the threshold even though the first block was clean.
 		if self.discard_empty_enabled and os.path.exists(filepath):
 			try:
 				if substation.recording.ChannelRecorder.check_empty(filepath):
@@ -1266,9 +1284,14 @@ class RadioScanner:
 		"""
 		Process a single IQ slice to detect active channels and manage recording.
 
-		Computes PSD, estimates noise floor, applies per-channel detection with
-		hysteresis, and when recording is enabled, demodulates only the active
-		channel regions to keep CPU use predictable.
+		Pipeline: ADC saturation check → DC removal → Welch PSD → EMA noise
+		floor → warmup gate → bulk energy fast-path → per-channel SNR with
+		hysteresis → turn-ON noise rejection (Gate 1: RF variance, Gate 2:
+		audio spectral flatness via speculative demod) → audio silence
+		timeout for active channels → state transitions and callbacks →
+		demodulation with sample-level trim and fade → recording.  Turn-OFF
+		triggers Gate 3 (post-recording min-duration and flatness checks)
+		in _stop_channel_recording.
 		"""
 
 		start_time = time.perf_counter()
@@ -1338,7 +1361,7 @@ class RadioScanner:
 				self._warmup_remaining -= 1
 				self.sample_counter += len(samples)
 				if self._warmup_remaining == 0:
-					logger.info("Noise floor warmup complete (%.1f dB). Detection enabled.", noise_floor_db)
+					logger.info(f"Noise floor warmup complete ({noise_floor_db:.1f} dB). Detection enabled.")
 				return
 
 			# Phase 4: bulk energy check avoids per-channel work when quiet.
@@ -1400,6 +1423,17 @@ class RadioScanner:
 				
 				# Channel is "active" if signal is strong OR we are within the hold time window
 				is_active = above_threshold or (now - self.channel_last_active_time.get(channel_freq, 0) < self.hold_time_seconds)
+
+				# Audio silence override: if the channel is recording but
+				# demodulated audio has been silent for longer than the
+				# audio silence timeout, force it OFF.  This catches AM
+				# carriers that persist after voice stops, where RF SNR
+				# stays above threshold but there is no useful content.
+				if is_active and current_state and self.audio_silence_timeout > 0:
+					if channel_freq in self.channel_recorders:
+						audio_last = self.channel_audio_last_active.get(channel_freq, 0)
+						if now - audio_last >= self.audio_silence_timeout:
+							is_active = False
 
 				# Compute segment PSDs lazily only when a transition is detected.
 				# These are needed for both fine-grained transition localization
@@ -1468,8 +1502,8 @@ class RadioScanner:
 						flatness = float(numpy.exp(
 							numpy.mean(numpy.log(preview_psd)) - numpy.log(numpy.mean(preview_psd))
 						))
-						if flatness > 0.15:
-							logger.info(
+						if flatness > substation.constants.SPECTRAL_FLATNESS_THRESHOLD:
+							logger.debug(
 								f"Channel {idx} suppressed: audio is noise-only "
 								f"(spectral flatness {flatness:.2f})"
 							)
@@ -1509,6 +1543,10 @@ class RadioScanner:
 
 						if not turning_off:
 							self.channel_demod_state[channel_freq] = new_state
+							if len(audio) > 0:
+								audio_rms = float(numpy.sqrt(numpy.mean(audio ** 2)))
+								if audio_rms > substation.constants.AUDIO_SILENCE_RMS_THRESHOLD:
+									self.channel_audio_last_active[channel_freq] = now
 
 						recorder = self.channel_recorders.get(channel_freq)
 						if recorder:
@@ -1519,6 +1557,7 @@ class RadioScanner:
 				if turning_off:
 					self.channel_filter_zi.pop(channel_freq, None)
 					self.channel_demod_state.pop(channel_freq, None)
+					self.channel_audio_last_active.pop(channel_freq, None)
 					if channel_freq in self.channel_recorders:
 						asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
 

@@ -128,6 +128,19 @@ WELCH_SEGMENTS = 8
 # of 3 dB cleanly separates the cases.
 ACTIVATION_VARIANCE_DB = 3.0
 
+# Demodulated audio RMS below which a channel is considered "silent."
+# Used by the audio silence timeout to stop recording when the transmitter
+# is keyed but not speaking (common on AM airband).  The soft limiter
+# normalises output levels, so 0.01 is stable across bands and gain settings.
+AUDIO_SILENCE_RMS_THRESHOLD = 0.01
+
+# Spectral flatness (Wiener entropy) threshold for noise rejection.
+# Noise has a flat spectrum (flatness 0.3-0.5); any real signal — voice,
+# data, tones — has a peaked spectrum (flatness < 0.04).  0.15 sits in
+# the large gap between the two groups.  Used by Gate 2 (turn-ON
+# speculative demod check) and Gate 3b (post-recording whole-file check).
+SPECTRAL_FLATNESS_THRESHOLD = 0.15
+
 # ==============================================================================
 # Noise Floor Estimation Constants
 # ==============================================================================

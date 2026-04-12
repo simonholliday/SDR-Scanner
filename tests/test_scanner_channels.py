@@ -50,7 +50,7 @@ class TestCalculateChannels:
 
 	def test_excluded_channels (self, minimal_config_dict):
 		"""Excluded indices should be removed from the channel list."""
-		minimal_config_dict["bands"]["test_nfm"]["exclude_channel_indices"] = [0, 2]
+		minimal_config_dict["bands"]["test_nfm"]["exclude_channel_indices"] = [1, 3]
 		config = substation.config.validate_config(minimal_config_dict)
 		sc = substation.scanner.RadioScanner(
 			config=config, band_name="test_nfm", device_type="rtlsdr"
