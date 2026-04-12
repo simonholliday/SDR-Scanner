@@ -120,8 +120,8 @@ class RadioScanner:
 		self.buffer_size_seconds = self.recording_config.buffer_size_seconds
 		self.disk_flush_interval = self.recording_config.disk_flush_interval_seconds
 		self.audio_output_dir = self.recording_config.audio_output_dir
-		self.fade_in_ms = self.recording_config.fade_in_ms
-		self.fade_out_ms = self.recording_config.fade_out_ms
+		# fade_in_ms / fade_out_ms are passed to ChannelRecorder and applied
+		# during WAV writing (after carrier transient trimming).
 		self.soft_limit_drive = self.recording_config.soft_limit_drive
 		self.hold_time_seconds = self.recording_config.recording_hold_time_ms / 1000.0
 		self.audio_silence_timeout = self.recording_config.audio_silence_timeout_ms / 1000.0
@@ -1212,6 +1212,8 @@ class RadioScanner:
 			soft_limit_drive=self.soft_limit_drive,
 			noise_reduction_enabled=self.recording_config.noise_reduction_enabled,
 			trim_carrier_transients=self.recording_config.trim_carrier_transients,
+			fade_in_ms=self.recording_config.fade_in_ms,
+			fade_out_ms=self.recording_config.fade_out_ms,
 			dynamics_curve_enabled=self.recording_config.dynamics_curve_enabled,
 			dynamics_curve_config=self.recording_config.dynamics_curve,
 		)
@@ -1543,17 +1545,14 @@ class RadioScanner:
 
 						audio, new_state = demod_func(channel_iq, self.sample_rate, self.audio_sample_rate, state=demod_state)
 
-						# Sample-level trim refinement + fade-only-padding:
-						# Refine the coarse PSD boundary on the demodulated audio,
-						# then apply fades only to the padding region (not signal content).
+						# Sample-level trim refinement: refine the coarse PSD
+						# boundary on the demodulated audio.  Fades are applied
+						# later in the recording pipeline (_write_samples_to_wav)
+						# so they survive carrier transient trimming.
 						if turning_on:
-							audio, pad_samples = self._refine_trim_on_audio(audio, turning_on=True)
-							if self.fade_in_ms:
-								audio = substation.dsp.filters.apply_fade(audio, self.audio_sample_rate, self.fade_in_ms, None, pad_in_samples=pad_samples)
+							audio, _pad = self._refine_trim_on_audio(audio, turning_on=True)
 						elif turning_off:
-							audio, pad_samples = self._refine_trim_on_audio(audio, turning_on=False)
-							if self.fade_out_ms:
-								audio = substation.dsp.filters.apply_fade(audio, self.audio_sample_rate, None, self.fade_out_ms, pad_out_samples=pad_samples)
+							audio, _pad = self._refine_trim_on_audio(audio, turning_on=False)
 
 						if not turning_off:
 							self.channel_demod_state[channel_freq] = new_state

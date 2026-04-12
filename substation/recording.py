@@ -26,6 +26,7 @@ import numpy.typing
 import soundfile
 
 import substation.constants
+import substation.dsp.filters
 import substation.dsp.noise_reduction
 
 
@@ -202,6 +203,8 @@ class ChannelRecorder:
 		soft_limit_drive: float = 1.25,
 		noise_reduction_enabled: bool = True,
 		trim_carrier_transients: bool = False,
+		fade_in_ms: float | None = None,
+		fade_out_ms: float | None = None,
 		dynamics_curve_enabled: bool = False,
 		dynamics_curve_config: typing.Any = None,
 	) -> None:
@@ -254,6 +257,8 @@ class ChannelRecorder:
 		self.soft_limit_scale = 1.0 / math.tanh(self.soft_limit_drive)
 		self.noise_reduction_enabled = noise_reduction_enabled
 		self.trim_carrier_transients = trim_carrier_transients
+		self.fade_in_ms = fade_in_ms
+		self.fade_out_ms = fade_out_ms
 		self._first_flush_done = False
 		self.dynamics_curve_enabled = dynamics_curve_enabled
 		self.dynamics_curve_config = dynamics_curve_config
@@ -512,6 +517,15 @@ class ChannelRecorder:
 				samples = _trim_carrier_transient_start(samples, self.audio_sample_rate)
 			if self._closing.is_set():
 				samples = _trim_carrier_transient_end(samples, self.audio_sample_rate)
+
+		# Fades: apply fade-in on first flush, fade-out on final flush.
+		# Runs after transient trimming so the fade is always on the final
+		# audio boundary (not on samples that get trimmed away).
+		if samples.size > 0:
+			if not self._first_flush_done and self.fade_in_ms:
+				samples = substation.dsp.filters.apply_fade(samples, self.audio_sample_rate, self.fade_in_ms, None)
+			if self._closing.is_set() and self.fade_out_ms:
+				samples = substation.dsp.filters.apply_fade(samples, self.audio_sample_rate, None, self.fade_out_ms)
 
 		self._first_flush_done = True
 
