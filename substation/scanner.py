@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 import typing
 
@@ -110,6 +111,7 @@ class RadioScanner:
 		self.fade_out_ms = self.recording_config.fade_out_ms
 		self.soft_limit_drive = self.recording_config.soft_limit_drive
 		self.hold_time_seconds = self.recording_config.recording_hold_time_ms / 1000.0
+		self.discard_empty_enabled = self.recording_config.discard_empty_enabled
 
 		self.can_demod = self.modulation in substation.dsp.demodulation.DEMODULATORS
 
@@ -1224,10 +1226,25 @@ class RadioScanner:
 		# Close recorder (flushes buffer and closes WAV file)
 		await channel_recorder.close()
 
-		# Trigger recording finished callbacks on the main event loop
-		# Run these after close() so we are sure the file is finished and metadata is appended.
 		ch_idx = channel_recorder.channel_index
 		filepath = channel_recorder.filepath
+
+		# Gate 3 (post-recording): discard if the WHOLE recording is
+		# noise-only.  This catches a different case than the turn-ON
+		# Gate 2 check: a signal that starts with real content (passes
+		# Gate 2) but where the bulk of the recording is noise — e.g. a
+		# brief transmission followed by hold-timer padding.  The
+		# spectral flatness of the full file may exceed the threshold
+		# even though the first block was clean.
+		if self.discard_empty_enabled and os.path.exists(filepath):
+			try:
+				if substation.recording.ChannelRecorder.check_empty(filepath):
+					os.remove(filepath)
+					logger.info(f"Discarded empty recording: {os.path.basename(filepath)}")
+					del self.channel_recorders[channel_freq]
+					return
+			except (OSError, ValueError) as exc:
+				logger.debug(f"Empty-check failed for {filepath}: {exc}")
 
 		loop = self.loop or asyncio.get_running_loop()
 
@@ -1395,10 +1412,32 @@ class RadioScanner:
 					if segment_psds:
 						segment_noise_floors = [self._estimate_noise_floor(psd) for psd in segment_psds]
 
-				# Variance check on turn-ON: stationary noise has low temporal
-				# variance even when its average power crosses the SNR threshold.
-				# Real signals (voice, data bursts) fluctuate substantially over
-				# the slice.  Suppress activations that look statistically flat.
+				# ── Turn-ON noise rejection (two independent gates) ──
+				#
+				# Gate 1 — RF-level variance: rejects stationary noise whose
+				# average power crosses the SNR threshold.  Cheap (~0.1 ms,
+				# reuses already-computed segment PSDs).  Catches broadband
+				# noise that happens to be a few dB above the floor.
+				#
+				# Gate 2 — Audio-level spectral flatness: speculatively
+				# demodulates the IQ slice and checks whether the audio
+				# spectrum is flat (noise) or peaked (signal).  More
+				# expensive (~10-20 ms) so it runs only after Gate 1
+				# passes.  Catches narrowband noise that has enough
+				# temporal variance to fool Gate 1 but no signal content.
+				#
+				# Both gates suppress the activation BEFORE
+				# _prepare_channel_transition fires the ON callback or
+				# starts a recording — so downstream consumers never see
+				# an ON event for a noise-only channel.
+				#
+				# A third gate (post-recording spectral flatness in
+				# _stop_channel_recording) catches the edge case where a
+				# signal starts with real content but the overall recording
+				# is mostly noise, e.g. a brief transmission followed by
+				# minutes of hold-timer noise.
+
+				# Gate 1: RF power variance
 				if is_active and not current_state and segment_psds:
 					var_threshold = (
 						self.band_config.activation_variance_db
@@ -1413,13 +1452,33 @@ class RadioScanner:
 								f"below threshold {var_threshold:.1f} dB (likely noise)"
 							)
 							is_active = False
-							# Roll back the last_active_time bump so a noise-only
-							# slice doesn't keep the channel "warm" within the hold
-							# time window and trigger another suppression next slice.
 							if prior_last_active_time is None:
 								self.channel_last_active_time.pop(channel_freq, None)
 							else:
 								self.channel_last_active_time[channel_freq] = prior_last_active_time
+							continue
+
+				# Gate 2: audio spectral flatness (speculative demodulation)
+				if is_active and not current_state and self.can_demod and self.discard_empty_enabled:
+					preview_iq = self._extract_channel_iq(samples, channel_freq)
+					preview_func = substation.dsp.demodulation.DEMODULATORS[self.modulation]
+					preview_audio, _ = preview_func(preview_iq, self.sample_rate, self.audio_sample_rate)
+					if len(preview_audio) >= 512:
+						preview_psd = scipy.signal.welch(preview_audio, self.audio_sample_rate, nperseg=512)[1] + 1e-12
+						flatness = float(numpy.exp(
+							numpy.mean(numpy.log(preview_psd)) - numpy.log(numpy.mean(preview_psd))
+						))
+						if flatness > 0.15:
+							logger.info(
+								f"Channel {idx} suppressed: audio is noise-only "
+								f"(spectral flatness {flatness:.2f})"
+							)
+							is_active = False
+							if prior_last_active_time is None:
+								self.channel_last_active_time.pop(channel_freq, None)
+							else:
+								self.channel_last_active_time[channel_freq] = prior_last_active_time
+							self.channel_filter_zi.pop(channel_freq, None)
 							continue
 
 				trim_start, trim_end, offset, turning_on, turning_off = self._prepare_channel_transition(

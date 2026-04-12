@@ -23,16 +23,105 @@ logger = logging.getLogger(__name__)
 # Track which resampling ratios have already been warned about to avoid log spam
 _RESAMPLE_WARNED_RATIOS: set[tuple[int, int]] = set()
 
-# Refuse to call resample_poly when the polyphase filter would be larger than
-# this many taps.  scipy designs a filter of length 2*10*max(up,down)+1 inside
-# resample_poly, so a max(up,down) of 100_000 caps the filter at ~2 million
-# taps (~16 MB of float64).  Anything beyond this is almost certainly a config
-# bug — for example, sample_rate=2500000 with audio_sample_rate=16000 and a
-# coprime intermediate IF rate produces max(up,down)=2500000, which would
-# allocate a 400 MB filter and lock the system up.  When this triggers we log
-# a clear error and return zero-length output rather than try to do the
-# allocation.
+# Refuse to build a polyphase filter when max(up, down) exceeds this.  The
+# filter length is approximately 2 * _RESAMPLE_HALF_LEN * max(up, down), so
+# a max of 100_000 caps it at ~2 million taps (~16 MB of float64).  Anything
+# beyond this is almost certainly a config bug — for example,
+# sample_rate=2500000 with audio_sample_rate=16000 and a coprime intermediate
+# IF rate produces max(up,down)=2500000, which would try to allocate hundreds
+# of megabytes.  When this triggers we log a clear error and return
+# zero-length output.
 _RESAMPLE_MAX_FACTOR = 100_000
+
+# Half-length of the Kaiser-windowed lowpass FIR used by the streaming
+# polyphase resampler, in units of max(up, down).  A value of 10 gives a
+# filter of length 2*10*max(up,down)+1, matching scipy.signal.resample_poly.
+_RESAMPLE_HALF_LEN = 10
+
+
+def _streaming_rational_resample (
+	signal: numpy.typing.NDArray,
+	up: int,
+	down: int,
+	state: dict,
+	state_prefix: str,
+) -> tuple[numpy.typing.NDArray, dict]:
+
+	"""
+	Stateful polyphase FIR rational resampler (up/down).
+
+	Unlike scipy.signal.resample_poly, this function carries its filter
+	state across calls so that block-by-block processing produces output
+	identical to processing the entire signal at once — no zero-padding
+	transients, no fractional-sample drift.
+
+	The algorithm:
+	  1.  Design a Kaiser-windowed lowpass FIR once and partition it into
+	      `up` polyphase sub-filters.
+	  2.  Maintain a short buffer of recent input samples (the FIR memory).
+	  3.  For each output sample, pick the sub-filter whose fractional
+	      delay matches the current output phase, dot-product it with the
+	      buffer, and advance the input pointer by down/up.
+
+	This is the standard polyphase resampler used by libsamplerate, soxr,
+	and GStreamer's audioresample.
+	"""
+
+	fir_key = f'{state_prefix}poly_fir'
+	buf_key = f'{state_prefix}poly_buf'
+	phase_key = f'{state_prefix}poly_phase'
+	offset_key = f'{state_prefix}poly_offset'
+
+	if fir_key not in state:
+		n_taps = 2 * _RESAMPLE_HALF_LEN * max(up, down) + 1
+		cutoff = min(1.0 / up, 1.0 / down)
+		fir = scipy.signal.firwin(n_taps, cutoff, window=('kaiser', 5.0)) * up
+		sub_len = (n_taps + up - 1) // up
+		padded = numpy.zeros(sub_len * up, dtype=numpy.float64)
+		padded[:n_taps] = fir
+		# polyphase[p] = h[p], h[p+up], h[p+2*up], ... (the p-th branch)
+		# Flip each branch so dot(coeffs, seg) performs convolution not correlation.
+		polyphase_branches = padded.reshape(sub_len, up).T
+		state[fir_key] = polyphase_branches[:, ::-1].copy()
+		state[buf_key] = numpy.zeros(sub_len, dtype=signal.dtype)
+		state[phase_key] = 0
+		state[offset_key] = 0
+
+	polyphase: numpy.typing.NDArray = state[fir_key]
+	sub_len = polyphase.shape[1]
+	buf: numpy.typing.NDArray = state[buf_key]
+	phase: int = state[phase_key]
+	offset: int = state[offset_key]
+
+	x = numpy.concatenate([buf, signal])
+	n_in = len(signal)
+
+	n_out_estimate = int(numpy.ceil((n_in - offset) * up / down))
+	out = numpy.empty(max(0, n_out_estimate + up), dtype=signal.dtype)
+
+	i = sub_len + offset
+	k = 0
+	while i < len(x):
+		coeffs = polyphase[phase]
+		start = i - sub_len
+		seg = x[start:i]
+		if numpy.iscomplexobj(seg):
+			out[k] = numpy.dot(coeffs, seg.real) + 1j * numpy.dot(coeffs, seg.imag)
+		else:
+			out[k] = numpy.dot(coeffs, seg)
+		k += 1
+		phase += down
+		i += phase // up
+		phase = phase % up
+
+	state[buf_key] = x[-sub_len:].copy()
+	state[phase_key] = phase
+	state[offset_key] = i - len(x)
+
+	result = out[:k]
+	if signal.dtype == numpy.float32 or signal.dtype == numpy.float64:
+		return result.astype(numpy.float32), state
+	return result.astype(numpy.complex64), state
 
 
 def _decimate_common (
@@ -72,38 +161,21 @@ def _decimate_common (
 	decimation_factor = sr // ar
 
 	if sr % ar != 0:
-		# Rational resampling: upsample by 'up', then downsample by 'down'
-		# Example: 2 MHz -> 48 kHz is not integer-divisible
-		# GCD(2000000, 48000) = 16000, so up=3, down=125
 		g = math.gcd(sr, ar)
 		up = ar // g
 		down = sr // g
 
-		# Warn only when the polyphase filter is large enough to actually
-		# matter for CPU.  scipy designs a filter of length ~2*10*max(up,down),
-		# so max(up,down)>1000 means a 20k+ tap filter — worth flagging.
-		# Below that the resampling is essentially free, and warning would
-		# spam the logs on every channel activation for sample rates where
-		# the user has no choice (e.g. AirSpy R2 fixed at 2.5 / 10 MHz).
-		# The pathological cases (max>100_000) are caught by the backstop
-		# below regardless.
 		if max(up, down) > 1_000:
 			ratio = (sr, ar)
 			if ratio not in _RESAMPLE_WARNED_RATIOS:
 				logger.warning(
 					f"Non-integer resample ratio: {sr} -> {ar} Hz "
-					f"(up={up}, down={down}, ~{2 * 10 * max(up, down) + 1} tap filter).  "
+					f"(up={up}, down={down}, ~{2 * _RESAMPLE_HALF_LEN * max(up, down) + 1} tap filter).  "
 					"Prefer a sample_rate that is an integer multiple of target rate "
 					"for lower CPU."
 				)
 				_RESAMPLE_WARNED_RATIOS.add(ratio)
 
-		# Defensive backstop: refuse to design a polyphase filter so large
-		# that scipy.signal.resample_poly would block / OOM.  Coprime
-		# rates (g==1) are the failure mode — e.g. sr=2500000 paired with
-		# a non-divisor IF rate.  Returning empty output is preferable to
-		# locking up the system; the demodulator can recover on the next
-		# block once the call site has been fixed.
 		if max(up, down) > _RESAMPLE_MAX_FACTOR:
 			logger.error(
 				f"Refusing pathological resample {sr} -> {ar} Hz "
@@ -113,47 +185,7 @@ def _decimate_common (
 			)
 			return numpy.array([], dtype=signal.dtype), state
 
-		prev_key = f'{state_prefix}resample_prev'
-		ratio_key = f'{state_prefix}resample_ratio'
-		taps_key = f'{state_prefix}resample_taps_len'
-		
-		prev = state.get(prev_key, numpy.array([], dtype=signal.dtype))
-		last_ratio = state.get(ratio_key)
-		
-		if last_ratio != (up, down):
-			prev = numpy.array([], dtype=signal.dtype)
-			state[ratio_key] = (up, down)
-
-		current = signal
-		# Prepend previous block's tail to provide context for FIR filter
-		if prev.size > 0:
-			signal = numpy.concatenate([prev, current])
-			
-		# Perform rational resampling using polyphase filters
-		# resample_poly handles both float and complex correctly
-		resampled = scipy.signal.resample_poly(signal, up, down)
-		
-		# Ensure output matches input type (scipy allows float->float, complex->complex)
-		if signal.dtype == numpy.float32 or signal.dtype == numpy.float64:
-			resampled = resampled.astype(numpy.float32)
-		else:
-			resampled = resampled.astype(numpy.complex64)
-
-		if prev.size > 0:
-			# Drop output samples that came from the prepended overlap
-			out_prev = int(numpy.ceil(prev.size * up / down))
-			resampled = resampled[out_prev:]
-
-		# Save tail of current block for next iteration
-		taps_len = state.get(taps_key)
-		if taps_len is None:
-			# Polyphase FIR length is approximately 10 * max(up, down)
-			taps_len = 10 * max(up, down) + 1
-			state[taps_key] = taps_len
-			
-		overlap_len = min(current.size, int(taps_len))
-		state[prev_key] = current[-overlap_len:].copy()
-		return resampled, state
+		return _streaming_rational_resample(signal, up, down, state, state_prefix)
 
 	if decimation_factor <= 1:
 		return signal, state

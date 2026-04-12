@@ -265,7 +265,7 @@ The same `sdr_gain_db`, `sdr_gain_elements`, and `sdr_device_settings` config ke
 
 ## Key Features & Optimizations
 - **Advanced Signal Detection**: Uses Welch's Power Spectral Density (PSD) estimation for stable, low-variance activity detection. The noise floor is EMA-smoothed across slices to eliminate jitter, with a warmup period that absorbs SDR hardware startup transients before detection begins.
-- **Statistical Noise Rejection**: A temporal variance check at channel turn-on distinguishes real signals (voice, data bursts — high variance) from stationary noise (low variance), eliminating the "empty hiss" recordings that plague high-sensitivity receivers. Works for any modulation type. See [Rejecting empty/noise recordings](#rejecting-emptynoise-recordings) below.
+- **Three-Layer Noise Rejection**: Eliminates the "empty hiss" recordings that plague high-sensitivity receivers. Layer 1: RF power variance rejects stationary noise at the PSD level. Layer 2: spectral flatness of speculatively demodulated audio rejects noise that passes the variance check. Layer 3: post-recording flatness check discards files where signal content was brief relative to hold-timer padding. All three are modulation-agnostic. See [Rejecting empty/noise recordings](#rejecting-emptynoise-recordings) below.
 - **Parallel Multi-Channel Recording**: Simultaneously detects and records all active channels in a band - unlike traditional handheld scanners which only play one channel at a time.
 - **High-Fidelity Demodulation**: Implements stateful AM and NFM demodulation with continuous phase tracking and DC-blocking, eliminating pops and discontinuities between audio blocks.
 - **Precise Transition Trimming**: After coarse PSD-based detection, demodulated audio is scanned at sample level to find exact signal boundaries. Padding is added around the boundary and faded with a half-cosine S-curve, preserving signal content (including attack transients) while eliminating clicks.
@@ -441,6 +441,7 @@ recording:
 - `soft_limit_drive`: post-processing soft limiter drive. Typical range 1.5-3.0 (higher = stronger limiting).
 - `noise_reduction_enabled`: toggle spectral subtraction noise reduction (default: true).
 - `recording_hold_time_ms`: duration in ms to continue recording after signal drops below threshold (default: 500).
+- `discard_empty_enabled`: automatically discard noise-only recordings using spectral flatness analysis (default: true). Applies at two points: before activation (rejects noise triggers without starting a recording) and after recording close (catches recordings that became mostly noise). See [Rejecting empty/noise recordings](#rejecting-emptynoise-recordings).
 
 Band Defaults
 ```
@@ -559,35 +560,63 @@ The `snr_threshold_db` setting controls how far above the noise floor a signal m
 
 SNR thresholds detect any signal that's louder than the noise floor — but they can't distinguish a *real* signal from a *noisy* one. With sensitive receivers like the AirSpy HF+ Discovery, you'll often see channels register 6-10 dB SNR yet contain only hissing static when played back. Raising `snr_threshold_db` doesn't help: the SNR is genuinely high, because the noise in that channel really is louder than the band-wide noise floor.
 
-What's needed is a way to tell **stationary noise** apart from **real, time-varying signals**.
+What's needed is a way to tell **noise** apart from **real signals** — and a single check isn't enough, because noise comes in different flavours that fool different detectors.
 
-### The solution: temporal variance
+### The solution: three-layer noise rejection
 
-Real signals fluctuate over time:
+The scanner applies three independent gates, each catching a different kind of false positive. All three are modulation-agnostic — they work for voice, data, tones, beacons, and any future modulation type.
 
-- **Voice** (AM airband, NFM PMR/marine): syllables, gaps, attack and release create 5-15 dB power swings within a 200 ms detection window
-- **TDMA data** (TETRA, DMR): timeslot structure produces sharp on/off transitions
-- **Burst data** (ACARS, VDL Mode 2): the entire transmission is a short burst, with quiet on either side
-- **Beacons / morse**: dot/dash patterns create clear modulation
+#### Gate 1 — RF power variance (`activation_variance_db`)
 
-Stationary noise — atmospheric, thermal, or computer-generated interference — produces **near-constant power** across the same window. Its temporal standard deviation is close to the natural sampling variance of an ideal PSD estimate (1-2 dB), regardless of how high its average power crosses the SNR threshold.
+Real signals fluctuate over time: syllables, frame structure, burst patterns all produce 5-15 dB power swings within a 200 ms detection window. Stationary noise produces near-constant power (standard deviation ~1-2 dB).
 
-The scanner measures the standard deviation of each channel's power across the 8 segment PSDs that make up the Welch detection window. At the moment a channel transitions from inactive to active, if that standard deviation falls below `activation_variance_db`, the activation itself is suppressed — the channel never enters the active state, so no detection event fires and no recording is created. The check applies to every band regardless of whether recording is enabled.
+At the moment a channel turns ON, the scanner measures the standard deviation of the channel's power across the 8 Welch PSD segments. If the standard deviation falls below `activation_variance_db` (default 3.0 dB), the activation is suppressed — no ON event fires, no recording starts.
+
+This is the cheapest check (~0.1 ms, reuses already-computed PSD data). It catches broadband stationary noise that happens to sit a few dB above the noise floor.
+
+#### Gate 2 — Audio spectral flatness (`discard_empty_enabled`)
+
+Some noise passes Gate 1 — for example, narrowband interference with enough temporal variance to look "active" in the RF domain, but no actual signal content when demodulated. Gate 2 catches this by speculatively demodulating the first IQ block and computing the **spectral flatness** (Wiener entropy) of the resulting audio.
+
+Noise has a flat power spectrum (flatness 0.3-0.5). Any real signal — voice, data, tones — has a peaked spectrum (flatness < 0.04). The threshold of 0.15 sits in the large gap between the two groups, providing robust separation without per-modulation tuning.
+
+If the flatness exceeds 0.15, the activation is suppressed — same as Gate 1. The speculative demodulation result is discarded; the main demodulation path runs fresh with proper trim boundaries if the check passes.
+
+This check is more expensive (~10-20 ms, requires demodulation + FFT) so it only runs after Gate 1 passes. Controlled by `discard_empty_enabled` (default: true).
+
+#### Gate 3 — Post-recording spectral flatness (`discard_empty_enabled`)
+
+Gates 1 and 2 both operate at turn-ON time. Gate 3 operates at turn-OFF time, on the finished recording.
+
+A signal can legitimately pass Gates 1 and 2 (the first block has real content) but produce a mostly-empty recording — for example, a brief 200 ms transmission followed by several seconds of hold-timer noise. The overall recording's spectral flatness will be high even though the first block was clean.
+
+After the WAV file is closed, the scanner reads it back and computes spectral flatness on the full audio. If the flatness exceeds 0.15, the file is deleted before any recording-finished callbacks fire.
+
+### How the gates differ
+
+| Gate | Domain | When | What it catches | Cost |
+| :--- | :--- | :--- | :--- | :--- |
+| 1. Variance | RF PSD | Turn-ON | Broadband stationary noise | ~0.1 ms |
+| 2. Flatness (preview) | Demodulated audio | Turn-ON | Narrowband noise that passes Gate 1 | ~10-20 ms |
+| 3. Flatness (whole file) | Demodulated audio | Turn-OFF | Recordings that started real but became mostly noise | ~10-20 ms |
 
 ### Example
 
 Imagine a "noisy" channel with average power 9 dB above the noise floor and a real voice transmission also at 9 dB SNR:
 
-| Source | Avg SNR | Per-segment power (dB above floor) | Std dev |
-| :--- | :--- | :--- | :--- |
-| Stationary noise | 9 dB | 9.1, 8.8, 9.0, 9.2, 8.9, 9.1, 8.7, 9.2 | **0.18 dB** |
-| Voice transmission | 9 dB | 4.0, 12.5, 14.1, 7.0, 13.8, 11.2, 5.5, 3.9 | **4.3 dB** |
+| Source | Avg SNR | Per-segment power (dB above floor) | Std dev | Audio flatness |
+| :--- | :--- | :--- | :--- | :--- |
+| Stationary noise | 9 dB | 9.1, 8.8, 9.0, 9.2, 8.9, 9.1, 8.7, 9.2 | **0.18 dB** | 0.38 |
+| Voice transmission | 9 dB | 4.0, 12.5, 14.1, 7.0, 13.8, 11.2, 5.5, 3.9 | **4.3 dB** | 0.003 |
 
-With `activation_variance_db: 3.0`, the noise is suppressed (0.18 < 3.0) and the voice is recorded (4.3 > 3.0). Both have the *same average SNR* — the variance check is what distinguishes them.
+The noise is caught by Gate 1 (variance 0.18 < 3.0). If it somehow passed Gate 1, Gate 2 would catch it (flatness 0.38 > 0.15). The voice passes both cleanly.
 
 ### Configuration
 
 ```yaml
+recording:
+  discard_empty_enabled: true   # Gates 2 and 3 (default: true)
+
 bands:
   air_civil_bristol_airspyhf:
     type: AIR
@@ -595,60 +624,56 @@ bands:
     freq_end: 126.0e+6
     sample_rate: 0.912e6
     snr_threshold_db: 6
-    activation_variance_db: 3.0  # Reject stationary-noise triggers
+    activation_variance_db: 3.0  # Gate 1 threshold (default: 3.0)
     sdr_gain_db: auto
 ```
-
-The check runs **only at the moment a channel turns on**. Once a recording is in progress, brief gaps in the audio (silences between words) don't interrupt it — those are handled by the existing hold-time logic. Recordings end naturally when the SNR drops below the OFF threshold for longer than the hold time.
 
 ### How it interacts with other settings
 
 | Setting | Relationship |
 | :--- | :--- |
-| `snr_threshold_db` | Runs first. Channels below the SNR threshold never get evaluated by the variance check. |
-| `activation_variance_db` | Runs second, only on turn-on transitions, only when the SNR check passed. |
+| `snr_threshold_db` | Runs first. Channels below the SNR threshold never reach the noise gates. |
+| `activation_variance_db` | Gate 1, only on turn-on transitions, only when the SNR check passed. |
+| `discard_empty_enabled` | Gates 2 and 3. Gate 2 runs after Gate 1 passes. Gate 3 runs on recording close. |
 | Hysteresis (built-in 3 dB margin) | Unchanged. Once a recording starts, it continues until SNR drops below `snr_threshold_db - 3`. |
-| Hold time (`recording_hold_time_ms`) | Unchanged. Brief drops in SNR during active recording are tolerated. |
+| Hold time (`recording_hold_time_ms`) | Unchanged. Brief drops in SNR during active recording are tolerated. Gate 3 may discard if the hold timer extends the recording far beyond the actual signal. |
 
-The variance check is fundamentally a *gate*, not a *filter* — it decides whether to consider a channel active, then steps out of the way.
+All three gates suppress silently — no ON callback fires, no recording file is kept. Downstream consumers (OSC bridge, user scripts) only see activations and recordings that passed all applicable gates.
 
 ### Tuning guidance
 
 | Symptom | Action |
 | :--- | :--- |
-| Default works | Leave it alone — the default of `3.0 dB` is chosen to cleanly separate noise from any modulated signal |
-| Real signals (voice, data) being rejected | Lower the threshold: try `2.0` or `2.5` |
-| Noise still triggers recordings | Raise the threshold: try `4.0` or `5.0` |
-| Want to disable entirely | Set to `0` |
-| Want to compare with/without | Run two scanner instances on different bands, one with the field set, one with `activation_variance_db: 0` |
+| Defaults work | Leave them — `activation_variance_db: 3.0` and `discard_empty_enabled: true` handle most cases |
+| Real signals (voice, data) being rejected by Gate 1 | Lower `activation_variance_db`: try `2.0` or `2.5` |
+| Noise still triggers recordings (passes Gate 1) | Gate 2 should catch it automatically; if not, raise `activation_variance_db` to `4.0` or `5.0` |
+| Want to disable Gate 1 | Set `activation_variance_db: 0` |
+| Want to disable Gates 2 and 3 | Set `discard_empty_enabled: false` |
 
 ### How to confirm it's working
 
-Suppression events are logged at **DEBUG** level (they're frequent enough that logging them at INFO would clutter normal output). Run the scanner with debug logging enabled to see them:
-
-```bash
-PYTHONUNBUFFERED=1 substation --band air_civil_bristol_airspyhf --device-type airspyhf 2>&1 | grep suppressed
-```
-
-Or set the root log level to DEBUG by modifying the logging configuration. You'll then see lines like:
-
+Gate 1 suppression is logged at **DEBUG** level:
 ```
 Channel 18 suppressed: power variance 0.4 dB below threshold 3.0 dB (likely noise)
 ```
 
-This means the variance check rejected an activation that the SNR check would have accepted. Real signals don't produce this log line — they pass straight through to recording.
+Gate 2 suppression is logged at **INFO** level:
+```
+Channel 18 suppressed: audio is noise-only (spectral flatness 0.38)
+```
 
-If you've enabled debug logging and see *no* suppression lines while still getting empty recordings, it means the noise has more variance than expected (e.g., bursty interference rather than constant hiss). Raise the threshold or investigate the interference source.
+Gate 3 discards are logged at **INFO** level:
+```
+Discarded empty recording: 2026-04-11_15-09-28_air_civil_bristol_airspyhf_59_6.0dB.wav
+```
 
 ### Generality
 
-The check operates on raw channel power computed from FFT bins, not on demodulated audio. This means it works identically for:
+All three gates are modulation-agnostic:
 
-- AM airband voice
-- NFM PMR, marine VHF, business radio, amateur 2m
-- TDMA data (TETRA, DMR) — frame structure produces strong variance
-- Burst data (ACARS, VDL Mode 2) — bursts produce maximum variance against silence
-- Any future modulation type added to the scanner — no demodulator-specific tuning needed
+- Gate 1 operates on raw channel power from FFT bins — works for any signal type
+- Gates 2 and 3 operate on spectral flatness of demodulated audio — any non-noise signal (voice, data, tones, beacons) produces a peaked spectrum that passes the check
+- No demodulator-specific tuning is needed
 
 ## Dynamics Curve (Experimental)
 

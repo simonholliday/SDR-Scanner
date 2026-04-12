@@ -469,6 +469,34 @@ class ChannelRecorder:
 		duration_seconds = self.total_samples_written / self.audio_sample_rate
 		logger.debug(f"Stopped recording channel {self.channel_index} (f = {self.channel_freq/1e6:.5f} MHz) - Duration: {duration_seconds:.1f}s, File: {self.filepath}")
 
+	@staticmethod
+	def check_empty (filepath: str, flatness_threshold: float = 0.15) -> bool:
+
+		"""
+		Return True if the finished recording is "empty" (noise-only).
+
+		Uses spectral flatness (Wiener entropy): noise has a flat power
+		spectrum (flatness ~0.3-0.5), while any real signal — voice, data,
+		tones — has a peaked spectrum (flatness < 0.04 typically).  A
+		threshold of 0.15 sits in the large gap between the two, giving
+		robust separation without tuning per modulation type.
+		"""
+
+		try:
+			data, sr = soundfile.read(filepath, dtype='float32')
+		except Exception:
+			return False
+
+		if len(data) < 512:
+			return True
+
+		import scipy.signal as _sig
+		freqs, psd = _sig.welch(data, sr, nperseg=min(2048, len(data)))
+		psd = psd + 1e-12
+		log_mean = numpy.mean(numpy.log(psd))
+		flatness = float(numpy.exp(log_mean - numpy.log(numpy.mean(psd))))
+		return flatness > flatness_threshold
+
 	def _append_bext_chunk (self) -> None:
 
 		"""

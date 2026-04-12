@@ -170,3 +170,42 @@ class TestBextMetadata:
 		with open(rec.filepath, 'rb') as f:
 			raw = f.read()
 		assert b'bext' in raw
+
+
+class TestCheckEmpty:
+
+	def test_white_noise_is_empty (self, tmp_path):
+		"""White noise has flat spectrum → check_empty returns True."""
+		sr = 16000
+		noise = numpy.random.RandomState(0).randn(sr * 2).astype(numpy.float32) * 0.01
+		path = str(tmp_path / "noise.wav")
+		soundfile.write(path, noise, sr)
+		assert substation.recording.ChannelRecorder.check_empty(path) is True
+
+	def test_tone_is_not_empty (self, tmp_path):
+		"""A sine tone has peaked spectrum → check_empty returns False."""
+		sr = 16000
+		t = numpy.arange(sr * 2) / sr
+		tone = (numpy.sin(2 * numpy.pi * 1000 * t) * 0.5).astype(numpy.float32)
+		path = str(tmp_path / "tone.wav")
+		soundfile.write(path, tone, sr)
+		assert substation.recording.ChannelRecorder.check_empty(path) is False
+
+	def test_voice_like_signal_is_not_empty (self, tmp_path):
+		"""Multi-tone signal mimicking voice formants is not empty."""
+		sr = 16000
+		t = numpy.arange(sr * 2) / sr
+		signal = (0.3 * numpy.sin(2 * numpy.pi * 300 * t) +
+		          0.2 * numpy.sin(2 * numpy.pi * 800 * t) +
+		          0.1 * numpy.sin(2 * numpy.pi * 1500 * t)).astype(numpy.float32)
+		path = str(tmp_path / "voice.wav")
+		soundfile.write(path, signal, sr)
+		assert substation.recording.ChannelRecorder.check_empty(path) is False
+
+	def test_very_short_file_is_empty (self, tmp_path):
+		"""Files shorter than 512 samples are always discarded."""
+		sr = 16000
+		short = numpy.zeros(100, dtype=numpy.float32)
+		path = str(tmp_path / "short.wav")
+		soundfile.write(path, short, sr)
+		assert substation.recording.ChannelRecorder.check_empty(path) is True

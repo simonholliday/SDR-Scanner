@@ -280,6 +280,7 @@ class RecordingConfig(pydantic.BaseModel):
 	soft_limit_drive: float = pydantic.Field(default=2.0, gt=0.0)
 	noise_reduction_enabled: bool = pydantic.Field(default=True)
 	recording_hold_time_ms: float = pydantic.Field(default=500.0, ge=0.0)
+	discard_empty_enabled: bool = pydantic.Field(default=True)
 	dynamics_curve_enabled: bool = pydantic.Field(default=False)
 	dynamics_curve: DynamicsCurveConfig = pydantic.Field(default_factory=DynamicsCurveConfig)
 

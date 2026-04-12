@@ -44,6 +44,12 @@ recording:
     # Soft limiter drive for post-processing; 1.5–3.0 is typical (higher = stronger limiting)
     soft_limit_drive: 1.25
 
+    # Discard noise-only recordings automatically using spectral flatness
+    # analysis.  Applies at turn-ON (rejects noise triggers before recording
+    # starts) and at turn-OFF (discards files that became mostly noise).
+    # See README.md "Rejecting empty/noise recordings" for details.
+    discard_empty_enabled: true
+
     # Experimental: dual-region expander applied per-sample to recorded audio.
     # Cuts the level of quiet samples (downward expansion, suppresses noise)
     # and gently boosts loud samples (upward expansion, gives voice presence).

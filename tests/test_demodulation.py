@@ -5,8 +5,10 @@ import time
 import numpy
 import pytest
 import scipy.fft
+import scipy.signal
 
 import substation.dsp.demodulation
+import substation.dsp.filters
 
 import iq_generators
 
@@ -250,6 +252,89 @@ class TestNFMAt2_5MHz:
 
 		assert elapsed < 1.0, f"demodulate_am took {elapsed:.2f}s — should be well under 1s"
 		assert len(audio) > 0
+
+
+class TestRationalResampleContinuity:
+
+	"""
+	Verify the streaming polyphase resampler produces seamless audio across
+	block boundaries.  The old resample_poly overlap-save approach drifted
+	by ~0.74 output samples per block (cumulative phase error of ~27°/block
+	at 1 kHz) and had a 3 dB SNR vs. whole-signal processing.
+	"""
+
+	IF_RATE = 62500
+	AUDIO_RATE = 16000
+	BLOCK_SIZE = 13107
+
+	def test_blockwise_matches_whole_signal (self):
+		"""Block-by-block output must be bit-identical to whole-signal."""
+		n_blocks = 10
+		total = self.BLOCK_SIZE * n_blocks
+		t = numpy.arange(total) / self.IF_RATE
+		signal = numpy.sin(2 * numpy.pi * 1000 * t).astype(numpy.float32)
+
+		state = {}
+		blocks = []
+		for b in range(n_blocks):
+			blk = signal[b * self.BLOCK_SIZE:(b + 1) * self.BLOCK_SIZE]
+			out, state = substation.dsp.filters.decimate_audio(blk, self.IF_RATE, self.AUDIO_RATE, state)
+			blocks.append(out)
+		blockwise = numpy.concatenate(blocks)
+
+		whole_state: dict = {}
+		whole, _ = substation.dsp.filters.decimate_audio(signal, self.IF_RATE, self.AUDIO_RATE, whole_state)
+
+		n = min(len(blockwise), len(whole))
+		numpy.testing.assert_array_equal(blockwise[:n], whole[:n])
+
+	def test_phase_continuity_at_boundaries (self):
+		"""Phase jumps at block boundaries must be < 1 degree."""
+		n_blocks = 10
+		total = self.BLOCK_SIZE * n_blocks
+		t = numpy.arange(total) / self.IF_RATE
+		signal = numpy.sin(2 * numpy.pi * 1000 * t).astype(numpy.float32)
+
+		state = {}
+		blocks = []
+		for b in range(n_blocks):
+			blk = signal[b * self.BLOCK_SIZE:(b + 1) * self.BLOCK_SIZE]
+			out, state = substation.dsp.filters.decimate_audio(blk, self.IF_RATE, self.AUDIO_RATE, state)
+			blocks.append(out)
+		audio = numpy.concatenate(blocks)
+
+		boundaries = numpy.cumsum([len(b) for b in blocks[:-1]])
+		for b in boundaries:
+			if b < 50 or b + 50 >= len(audio):
+				continue
+			seg = audio[b - 50:b + 50]
+			analytic = scipy.signal.hilbert(seg)
+			phases = numpy.unwrap(numpy.angle(analytic))
+			jump = abs(phases[51] - phases[50] - (phases[50] - phases[49]))
+			assert jump < numpy.radians(1.0), (
+				f"Phase jump {numpy.degrees(jump):.1f}° at boundary sample {b} exceeds 1°"
+			)
+
+	def test_unity_passband_gain (self):
+		"""DC and voice-band signals must pass at unity gain."""
+		dc = numpy.ones(50000, dtype=numpy.float32)
+		state: dict = {}
+		dc_out, _ = substation.dsp.filters.decimate_audio(dc, self.IF_RATE, self.AUDIO_RATE, state)
+		assert abs(dc_out[200:].mean() - 1.0) < 0.01
+
+	def test_complex_signal_supported (self):
+		"""The rational path must handle complex64 IQ (used by decimate_iq)."""
+		t = numpy.arange(self.BLOCK_SIZE * 3) / self.IF_RATE
+		iq = numpy.exp(1j * 2 * numpy.pi * 500 * t).astype(numpy.complex64)
+		state: dict = {}
+		blocks = []
+		for b in range(3):
+			blk = iq[b * self.BLOCK_SIZE:(b + 1) * self.BLOCK_SIZE]
+			out, state = substation.dsp.filters.decimate_iq(blk, self.IF_RATE, self.AUDIO_RATE, state)
+			blocks.append(out)
+		result = numpy.concatenate(blocks)
+		assert numpy.iscomplexobj(result)
+		assert len(result) > 0
 
 
 class TestDemodulatorsDict:
