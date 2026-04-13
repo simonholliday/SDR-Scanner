@@ -202,8 +202,21 @@ class RadioScanner:
 		# Filters attenuate signals near the edge of the passband, so we need extra space
 		self.band_edge_margin_hz = self.channel_spacing / 2
 
-		# Calculate center frequency (midpoint of the band) where SDR will be tuned
+		# Calculate center frequency (midpoint of the band) where SDR will be tuned.
+		# If a channel falls on the center, the DC spike would mask it.  Shift
+		# the center by half a channel spacing to place DC in the guard band
+		# between two channels where it causes no harm.
 		self.center_freq = (self.freq_start + self.freq_end) / 2
+
+		for ch_freq in self.channels:
+			if abs(ch_freq - self.center_freq) < self.channel_width / 2:
+				self.center_freq += self.channel_spacing / 2
+				logger.info(
+					f"DC offset: shifted center +{self.channel_spacing/2:.0f} Hz "
+					f"to avoid masking channel at {ch_freq/1e6:.5f} MHz"
+				)
+				break
+
 		# Required bandwidth includes the band span plus one channel width plus margin on each end
 		self.required_bandwidth = self.freq_end - self.freq_start + self.channel_width + (2 * self.band_edge_margin_hz)
 

@@ -98,6 +98,30 @@ class TestChannelExtraction:
 			assert phase_jump < 0.5  # radians — small jump
 
 
+class TestDcOffset:
+
+	def test_center_shifted_when_channel_on_dc (self, minimal_config_dict):
+		"""Center frequency shifts by half a channel when a channel falls on DC."""
+		# 9 channels (odd) → midpoint at 100.05 MHz lands exactly on channel 4
+		minimal_config_dict["bands"]["test_nfm"]["freq_start"] = 100e6
+		minimal_config_dict["bands"]["test_nfm"]["freq_end"] = 100e6 + 12500 * 8
+		minimal_config_dict["bands"]["test_nfm"]["channel_spacing"] = 12500
+		config = substation.config.validate_config(minimal_config_dict)
+		sc = substation.scanner.RadioScanner(
+			config=config, band_name="test_nfm", device_type="rtlsdr"
+		)
+		midpoint = (100e6 + 100e6 + 12500 * 8) / 2  # 100050000
+		# Center should have been shifted by half a channel spacing
+		assert sc.center_freq == pytest.approx(midpoint + 6250)
+
+	def test_center_unchanged_when_dc_clear (self, scanner_instance):
+		"""Center frequency unchanged when DC falls between channels."""
+		sc = scanner_instance
+		midpoint = (sc.freq_start + sc.freq_end) / 2
+		# PMR's midpoint (446.1 MHz) falls between channels — no shift
+		assert sc.center_freq == pytest.approx(midpoint)
+
+
 class TestNormalizeDeviceFamily:
 
 	def test_rtlsdr_aliases (self):
