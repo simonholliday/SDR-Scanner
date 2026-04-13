@@ -35,6 +35,30 @@ import substation.dsp.noise_reduction
 logger = logging.getLogger(__name__)
 
 
+def format_freq (hz: float) -> str:
+
+	"""Format a frequency in Hz as a compact, filename-safe string.
+
+	Automatically selects GHz, MHz, or kHz to keep the string short
+	while preserving full precision (no rounding).  Trailing zeros
+	are stripped for readability.
+
+	Examples: 1420405000 → '1.420405GHz', 446006250 → '446.00625MHz',
+	          125850000 → '125.85MHz', 14200 → '14.2kHz'.
+	"""
+
+	if hz >= 1e9:
+		s = f"{hz / 1e9:.6f}".rstrip('0').rstrip('.')
+		return f"{s}GHz"
+
+	if hz >= 1e6:
+		s = f"{hz / 1e6:.6f}".rstrip('0').rstrip('.')
+		return f"{s}MHz"
+
+	s = f"{hz / 1e3:.3f}".rstrip('0').rstrip('.')
+	return f"{s}kHz"
+
+
 def _trim_carrier_transient_start (audio: numpy.typing.NDArray[numpy.float32], sample_rate: int) -> numpy.typing.NDArray[numpy.float32]:
 
 	"""Remove a carrier key-ON transient from the start of the audio.
@@ -421,13 +445,14 @@ class ChannelRecorder:
 		seconds_since_midnight = (self.start_time - midnight).total_seconds()
 		self.time_reference = int(seconds_since_midnight * audio_sample_rate)
 
-		# Build filename with timestamp, band, and channel information
-		# Format: YYYY-MM-DD_HH-MM-SS_band_channel_[suffix].{wav,flac}
-		# Example: 2026-01-25_14-30-45_pmr_0_12.5dB_rtlsdr_0.wav
+		# Build filename with timestamp, band, channel, and frequency
+		# Format: YYYY-MM-DD_HH-MM-SS_band_channel_freq_[suffix].{wav,flac}
+		# Example: 2026-01-25_14-30-45_pmr_0_446.00625MHz_12.5dB_rtlsdr_0.wav
 		date_str = self.start_time.strftime("%Y-%m-%d")
 		time_str = self.start_time.strftime("%H-%M-%S")
+		freq_str = format_freq(channel_freq)
 
-		filename = f"{date_str}_{time_str}_{band_name}_{channel_index}"
+		filename = f"{date_str}_{time_str}_{band_name}_{channel_index}_{freq_str}"
 
 		if filename_suffix:
 			filename += "_" + filename_suffix

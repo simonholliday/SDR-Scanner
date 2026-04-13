@@ -36,6 +36,37 @@ def _make_recorder (tmp_path, max_seconds=5.0, sample_rate=16000, noise_reductio
 # ---------------------------------------------------------------------------
 # Ring buffer
 # ---------------------------------------------------------------------------
+# format_freq
+# ---------------------------------------------------------------------------
+
+class TestFormatFreq:
+
+	def test_ghz (self):
+		assert substation.recording.format_freq(1420405000) == "1.420405GHz"
+
+	def test_ghz_round (self):
+		assert substation.recording.format_freq(2e9) == "2GHz"
+
+	def test_mhz (self):
+		assert substation.recording.format_freq(446006250) == "446.00625MHz"
+
+	def test_mhz_trailing_zeros (self):
+		assert substation.recording.format_freq(125850000) == "125.85MHz"
+
+	def test_khz (self):
+		assert substation.recording.format_freq(14200) == "14.2kHz"
+
+	def test_khz_sub_mhz (self):
+		assert substation.recording.format_freq(500000) == "500kHz"
+
+	def test_filename_contains_freq (self, tmp_path):
+		rec = _make_recorder(tmp_path, max_seconds=1.0)
+		assert "446.00625MHz" in rec.filepath
+
+
+# ---------------------------------------------------------------------------
+# Ring buffer
+# ---------------------------------------------------------------------------
 
 class TestRingBuffer:
 
