@@ -66,7 +66,7 @@ A high-quality, low-cost general-purpose receiver. The natural starting point fo
 | `--device-type`    | `rtl`, `rtlsdr`, `rtl-sdr`                             |
 | Best for           | General VHF/UHF scanning, low cost, easy setup         |
 
-**Setup** — see [installation.txt §1](installation.txt) for the librtlsdr fork build and the DVB-T driver blacklist step.
+**Setup** — see [INSTALL.md §1](INSTALL.md) for the librtlsdr fork build and the DVB-T driver blacklist step.
 
 **Recommended starting config**
 - `snr_threshold_db: 4.5`
@@ -76,7 +76,7 @@ A high-quality, low-cost general-purpose receiver. The natural starting point fo
 
 **Gotchas**
 - The Blog V4 needs the [rtl-sdr-blog fork](https://github.com/rtlsdrblog/rtl-sdr-blog) of librtlsdr. The standard distro `librtlsdr` is missing the `rtlsdr_set_dithering` symbol that newer pyrtlsdr versions need; this is why the project pins `pyrtlsdr<0.4.0`.
-- The default Linux DVB-T driver claims the device on insertion as a TV tuner — it must be blacklisted (installation.txt covers this).
+- The default Linux DVB-T driver claims the device on insertion as a TV tuner — it must be blacklisted (INSTALL.md covers this).
 - The 8-bit ADC limits dynamic range. A strong adjacent station can desensitise weak ones in the same capture.
 - Manual gain values are typically 20-40 dB if you don't want AGC.
 
@@ -111,7 +111,7 @@ A wideband transceiver covering 1 MHz to 6 GHz with up to 20 MHz of instantaneou
 | `--device-type`    | `hackrf`, `hackrf-one`, `hackrfone`                                |
 | Best for           | Wideband monitoring, multi-band capture in a single tune           |
 
-**Setup** — see [installation.txt §2](installation.txt) for the USB buffer tuning (`usbcore.usbfs_memory_mb=1000`) and [installation.txt §3](installation.txt) for the `libhackrf-dev` system package.
+**Setup** — see [INSTALL.md §2](INSTALL.md) for the USB buffer tuning (`usbcore.usbfs_memory_mb=1000`) and [INSTALL.md §3](INSTALL.md) for the `libhackrf-dev` system package.
 
 **Recommended starting config**
 - `snr_threshold_db: 6`
@@ -122,7 +122,7 @@ A wideband transceiver covering 1 MHz to 6 GHz with up to 20 MHz of instantaneou
 **Gotchas**
 - **No hardware AGC.** Setting `sdr_gain_db: auto` does not enable AGC — there isn't one. The wrapper logs a warning and sets sensible defaults (LNA=32, VGA=30) so the device still works.
 - A numeric `sdr_gain_db` is silently clamped and stepped to the LNA's 8 dB grid and the VGA's 2 dB grid. Asking for 35 dB gets you 32. Check the startup log if the actual values matter.
-- High sample rates (~16-20 MHz) require raising the kernel USB buffer limit; otherwise samples will be dropped. See [installation.txt §2](installation.txt).
+- High sample rates (~16-20 MHz) require raising the kernel USB buffer limit; otherwise samples will be dropped. See [INSTALL.md §2](INSTALL.md).
 - The 8-bit ADC has the same dynamic-range caveats as the RTL-SDR — wide captures including a strong station can desensitise weak ones.
 - Multiple Python bindings exist (`python_hackrf`, `hackrf`, `pyhackrf`) with different APIs; the wrapper auto-detects whichever is installed.
 
@@ -156,7 +156,7 @@ A high-dynamic-range VHF/UHF receiver with a 12-bit ADC (≈16-bit effective fro
 | `--device-type`    | `airspy`, `airspy-r2`, `airspyr2`                                             |
 | Best for           | High-quality VHF/UHF, wide single-band capture, weak-signal work              |
 
-**Setup** — see [installation.txt §4](installation.txt) for the SoapySDR core and the AirSpy module. The Python venv **must** be created with `--system-site-packages` so it can access the system-installed SoapySDR Python bindings.
+**Setup** — see [INSTALL.md §4](INSTALL.md) for the SoapySDR core and the AirSpy module. The Python venv **must** be created with `--system-site-packages` so it can access the system-installed SoapySDR Python bindings.
 
 **Recommended starting config**
 - `snr_threshold_db: 6` (the higher sensitivity makes the RTL default 4.5 dB too noisy)
@@ -211,7 +211,7 @@ A precision HF and lower-VHF receiver. Exceptional sensitivity and dynamic range
 | `--device-type`    | `airspyhf`, `airspy-hf`, `airspyhf+`                                               |
 | Best for           | HF and lower-VHF precision work, weak-signal listening, narrow-band scanning       |
 
-**Setup** — see [installation.txt §4](installation.txt). On Raspberry Pi OS the `soapysdr-module-airspyhf` package may not be available in the distro repos; the install guide covers building it from source. As with the AirSpy R2, the venv **must** be created with `--system-site-packages`.
+**Setup** — see [INSTALL.md §4](INSTALL.md). On Raspberry Pi OS the `soapysdr-module-airspyhf` package may not be available in the distro repos; the install guide covers building it from source. As with the AirSpy R2, the venv **must** be created with `--system-site-packages`.
 
 **Recommended starting config**
 - `snr_threshold_db: 6` (essential — the device is sensitive enough that the RTL default 4.5 dB triggers on near-noise)
@@ -285,7 +285,7 @@ The same `sdr_gain_db`, `sdr_gain_elements`, and `sdr_device_settings` config ke
 - **Archive Ready**: Automatic recording to WAV (with Broadcast WAV/BEXT metadata for timeline placement in audio editors) or FLAC (lossless compressed, ~39% smaller). Embedded metadata includes frequency, timestamps, modulation, and detected CTCSS/DCS codes.
 
 ## Quick Start
-1) Install dependencies (see `installation.txt` for SDR drivers).
+1) Install dependencies (see [INSTALL.md](INSTALL.md) for SDR drivers and platform-specific setup).
 2) Install package in editable mode:
 ```bash
 pip install -e .

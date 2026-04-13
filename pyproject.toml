@@ -19,7 +19,7 @@ dependencies = [
     "pydantic>=2.0",
     # pyrtlsdr 0.4.0+ requires the rtlsdr_set_dithering symbol from the
     # rtl-sdr-blog fork.  Pinning below 0.4.0 keeps the package working
-    # against distro-packaged librtlsdr too — see installation.txt for
+    # against distro-packaged librtlsdr too — see INSTALL.md for
     # the fork build instructions.
     "pyrtlsdr>=0.3.0,<0.4.0",
     "python_hackrf",
@@ -30,7 +30,7 @@ dependencies = [
     "mutagen>=1.45",
     # SoapySDR (for AirSpy and other devices) is a system package — install
     # via apt (python3-soapysdr) and use --system-site-packages on the venv.
-    # See installation.txt section 4.
+    # See INSTALL.md section 4.
 ]
 
 [project.optional-dependencies]
