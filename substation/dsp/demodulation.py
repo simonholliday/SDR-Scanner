@@ -161,6 +161,71 @@ def _apply_voice_agc (
 	output *= substation.constants.AM_OUTPUT_GAIN
 	return numpy.clip(output, -1.0, 1.0).astype(numpy.float32, copy=False)
 
+_BLANKER_HALF_WIN = 3   # 7-sample window (0.11ms at 62.5 kHz) — shorter than any speech feature
+_BLANKER_K = 5.0        # MADs from median to consider a sample an outlier (conservative)
+
+
+def _blanker_hampel (
+	demod: numpy.typing.NDArray,
+	state: dict,
+) -> numpy.typing.NDArray:
+
+	"""Hampel impulse blanker for FM discriminator output.
+
+	Detects and replaces outlier samples caused by IQ phase
+	discontinuities (USB sample drops, device glitches).  Only modifies
+	samples that deviate from the local median by more than _BLANKER_K
+	times the local MAD (median absolute deviation).  Voice content
+	passes through unchanged because speech features span many samples
+	and won't trigger the outlier test.
+
+	Operates at IF rate (e.g. 62.5 kHz) on real-valued instantaneous
+	frequency from the FM discriminator.  Placed before de-emphasis so
+	the filter doesn't smear spike energy into adjacent samples.
+
+	Uses state['blanker_tail'] to carry the last half_win samples across
+	block boundaries, ensuring seamless detection at block edges.
+	"""
+
+	hw = _BLANKER_HALF_WIN
+	win_size = 2 * hw + 1
+
+	if len(demod) == 0:
+		return demod
+
+	# Prepend tail from previous block for continuity at the boundary.
+	tail = state.get('blanker_tail')
+	if tail is not None and len(tail) > 0:
+		combined = numpy.concatenate([tail, demod])
+		offset = len(tail)
+	else:
+		combined = demod
+		offset = 0
+
+	# Save tail for next block (last half_win samples of this block).
+	state['blanker_tail'] = demod[-hw:].copy()
+
+	# Rolling median and MAD via scipy.ndimage.median_filter.
+	rolling_median = scipy.ndimage.median_filter(combined, size=win_size, mode='reflect')
+	deviation = numpy.abs(combined - rolling_median)
+	rolling_mad = scipy.ndimage.median_filter(deviation, size=win_size, mode='reflect')
+
+	# Outlier mask: sample deviates from local median by more than k × MAD.
+	# The absolute floor (0.1 radians ≈ 6° phase jump) prevents false
+	# positives at sine wave peaks where MAD is tiny and even normal
+	# samples would exceed k × MAD.  Real FM discriminator spikes are
+	# typically >0.5 radians (>30° phase discontinuity).
+	threshold = numpy.maximum(rolling_mad * _BLANKER_K, 0.1)
+	outliers = deviation > threshold
+
+	# Replace outliers with the local median.
+	result = combined.copy()
+	result[outliers] = rolling_median[outliers]
+
+	# Return only the portion corresponding to the current block.
+	return result[offset:]
+
+
 def demodulate_nfm (
 	iq_samples: numpy.typing.NDArray[numpy.complex64],
 	sample_rate: float,
@@ -223,6 +288,11 @@ def demodulate_nfm (
 	iq_with_prev = numpy.concatenate(([state['nfm_last_iq']], iq_if))
 	demod = numpy.angle(iq_with_prev[1:] * numpy.conj(iq_with_prev[:-1]))
 	state['nfm_last_iq'] = iq_if[-1]
+
+	# 3b. Impulse blanker: suppress short spikes from IQ phase glitches
+	# (USB sample drops, device artifacts).  Runs at IF rate before
+	# de-emphasis so the filter doesn't smear spike energy.
+	demod = _blanker_hampel(demod, state)
 
 	# 4. De-emphasis compensates for transmitter pre-emphasis.
 	tau = substation.constants.NFM_DEEMPHASIS_TAU

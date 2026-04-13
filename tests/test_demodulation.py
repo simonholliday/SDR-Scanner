@@ -553,3 +553,49 @@ class TestSSBDemodulation:
 
 		with pytest.raises(ValueError, match="sideband"):
 			substation.dsp.demodulation.demodulate_ssb(iq, sr, asr, sideband='WSB')
+
+
+class TestHampelBlanker:
+
+	def test_clean_signal_unchanged (self):
+		"""A smooth signal with no outliers should pass through unmodified."""
+		signal = numpy.sin(numpy.linspace(0, 10 * numpy.pi, 1000)).astype(numpy.float32)
+		state: dict = {}
+		result = substation.dsp.demodulation._blanker_hampel(signal, state)
+		numpy.testing.assert_allclose(result, signal, atol=1e-6)
+
+	def test_spikes_removed (self):
+		"""Injected impulse spikes should be replaced with local median."""
+		signal = numpy.sin(numpy.linspace(0, 10 * numpy.pi, 1000)).astype(numpy.float32)
+		spiked = signal.copy()
+		spike_positions = [100, 300, 500, 700]
+		for pos in spike_positions:
+			spiked[pos] = 5.0  # huge outlier vs ~1.0 amplitude
+		state: dict = {}
+		result = substation.dsp.demodulation._blanker_hampel(spiked, state)
+		# Spikes should be suppressed — result should be close to original
+		for pos in spike_positions:
+			assert abs(result[pos]) < 2.0, f"Spike at {pos} not suppressed: {result[pos]}"
+		# Non-spike samples should be unchanged
+		mask = numpy.ones(len(signal), dtype=bool)
+		for pos in spike_positions:
+			mask[max(0, pos-1):pos+2] = False
+		numpy.testing.assert_allclose(result[mask], signal[mask], atol=1e-6)
+
+	def test_state_continuity_across_blocks (self):
+		"""Spikes at block boundaries should be detected using cross-block state."""
+		signal = numpy.zeros(200, dtype=numpy.float32)
+		# Spike right at the start of block 2
+		block1 = signal[:100].copy()
+		block2 = signal[100:].copy()
+		block2[0] = 5.0  # spike at first sample of block 2
+		state: dict = {}
+		substation.dsp.demodulation._blanker_hampel(block1, state)
+		result2 = substation.dsp.demodulation._blanker_hampel(block2, state)
+		assert abs(result2[0]) < 1.0, f"Spike at block boundary not suppressed: {result2[0]}"
+
+	def test_empty_signal (self):
+		"""Empty input should return empty output without error."""
+		state: dict = {}
+		result = substation.dsp.demodulation._blanker_hampel(numpy.array([], dtype=numpy.float32), state)
+		assert len(result) == 0

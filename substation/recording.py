@@ -35,36 +35,90 @@ logger = logging.getLogger(__name__)
 
 def _trim_carrier_transient_start (audio: numpy.typing.NDArray[numpy.float32], sample_rate: int) -> numpy.typing.NDArray[numpy.float32]:
 
-	"""
-	Remove a carrier key-ON transient from the start of the audio.
+	"""Remove a carrier key-ON transient from the start of the audio.
 
-	Scans the first 50ms for a sharp spike preceded by silence.  A
-	carrier transient is identified by: (1) short duration (<15ms),
-	(2) peak amplitude much higher than the pre-spike region (ratio >
-	CARRIER_TRANSIENT_RATIO).  Voice transients fail criterion 2
-	because they are preceded by other voice content, not silence.
+	Carrier transient shape (what we're looking for):
+	  - Very fast attack: the transmitter key-on produces a near-
+	    instantaneous amplitude spike (sub-millisecond rise time).
+	  - Brief duration: the entire transient (attack + decay) is
+	    typically 1-10ms, always under 15ms.
+	  - Exponential decay: amplitude drops back toward the noise floor
+	    over a few milliseconds after the initial spike.
+	  - Bordered by silence: the spike is preceded by noise-floor-level
+	    audio (or nothing, if at sample zero) and followed by a quiet
+	    gap before voice begins.
+
+	This shape distinguishes carrier transients from voice plosives
+	(e.g. 'p', 't'), which have a slower attack, are followed immediately
+	by voiced content, and are preceded by other speech — not silence.
+
+	Detection strategy:
+	  1. Scan the first 500ms (wide window because the scanner may
+	     detect the RF carrier hundreds of ms before the key-ON click).
+	  2. Find the *earliest* spike that exceeds the detection threshold
+	     (not the loudest — voice later in the window is often louder).
+	  3. Verify the spike meets all three criteria:
+	     - Pre-silence: region before spike is at noise floor (ratio > 8x)
+	     - Duration: spike decays within 15ms
+	     - Post-silence: 20ms after spike is quiet (< 25% of spike peak)
 	"""
 
-	scan_len = min(len(audio), int(sample_rate * 0.05))
+	# --- Scan window: first 500ms ---
+	# Wide because the scanner may detect the RF carrier 100-300ms before
+	# the key-ON transient arrives (carrier ramps up before full keying).
+	scan_len = min(len(audio), int(sample_rate * 0.5))
 	if scan_len < 10:
 		return audio
 
+	# --- Smoothed envelope ---
+	# 0.5ms moving-average window smooths sample-level noise while
+	# preserving the fast attack of a carrier transient (sub-ms rise).
 	env = numpy.abs(audio[:scan_len])
-	win = max(1, int(sample_rate * 0.0005))
+	win = max(1, int(sample_rate * 0.0005))  # 0.5ms = 8 samples at 16kHz
 	env_s = numpy.convolve(env, numpy.ones(win) / win, mode='same')
 
-	spike_idx = int(numpy.argmax(env_s))
+	# Minimum pre-silence region: 3ms.  If the spike is closer to
+	# sample zero than this, we use the body-RMS fallback instead.
+	min_pre = int(sample_rate * 0.003)  # 48 samples at 16kHz
+	ratio_threshold = substation.constants.CARRIER_TRANSIENT_RATIO  # 8.0
+
+	# --- Noise estimate ---
+	# 25th percentile of the scan region.  The median would be dominated
+	# by voice content in recordings where speech occupies >50% of the
+	# scan window; the 25th percentile better represents the quiet
+	# carrier/noise floor that precedes the transient.
+	noise_est = float(numpy.percentile(env[:scan_len], 25))
+	if noise_est < 1e-6:
+		noise_est = 1e-6
+	detect_threshold = noise_est * ratio_threshold
+
+	# --- Find earliest candidate ---
+	# Walk forward to find the first sample exceeding the detection
+	# threshold.  By searching chronologically rather than by amplitude
+	# (argmax), we find a small carrier transient even when louder voice
+	# content follows later in the scan window.
+	above = numpy.where(env_s > detect_threshold)[0]
+	if len(above) == 0:
+		return audio
+
+	# Refine: find the local peak within 15ms of the first crossing.
+	# The crossing may be on the rising edge; the true peak is nearby.
+	first_above = int(above[0])
+	peak_search_end = min(scan_len, first_above + int(sample_rate * 0.015))
+	spike_idx = first_above + int(numpy.argmax(env_s[first_above:peak_search_end]))
 	spike_peak = float(env_s[spike_idx])
 
-	# The pre-spike silence region ends before the smoothing window
-	# reaches the peak — ensures the click's rising edge doesn't
-	# contaminate the noise estimate.
+	# --- Check 1: Pre-silence (fast attack from quiet) ---
+	# The region before the spike must be at noise-floor level.  This
+	# rejects voice plosives, which are preceded by other speech content.
 	pre_end = max(0, spike_idx - win)
-	min_pre = int(sample_rate * 0.003)
 
 	if pre_end < min_pre:
-		# Spike is at the very start — no pre-silence available.
-		# Compare against signal body (20-50ms in) instead.
+		# Spike is within the first 3ms — no pre-silence available.
+		# This happens when the recording starts at the exact moment of
+		# key-on.  Fall back to comparing against the signal body
+		# (20-50ms in) which should be at noise floor if this is a
+		# genuine transient followed by a quiet gap before voice.
 		body_start = int(sample_rate * 0.02)
 		body_end = min(len(audio), int(sample_rate * 0.05))
 		if body_end <= body_start:
@@ -72,28 +126,46 @@ def _trim_carrier_transient_start (audio: numpy.typing.NDArray[numpy.float32], s
 		body_rms = float(numpy.sqrt(numpy.mean(audio[body_start:body_end] ** 2)))
 		if body_rms < 1e-6:
 			return audio
-		if spike_peak / body_rms < substation.constants.CARRIER_TRANSIENT_RATIO:
+		if spike_peak / body_rms < ratio_threshold:
 			return audio
 		pre_rms = body_rms
 	else:
+		# Normal case: measure silence before the spike.
 		pre_rms = float(numpy.sqrt(numpy.mean(audio[:pre_end] ** 2)))
 		if pre_rms < 1e-6:
 			pre_rms = 1e-6
-		if spike_peak / pre_rms < substation.constants.CARRIER_TRANSIENT_RATIO:
+		if spike_peak / pre_rms < ratio_threshold:
 			return audio
 
-	# Find where the spike decays back toward noise.
-	threshold = pre_rms * substation.constants.CARRIER_TRANSIENT_RATIO
-	decay_win = max(1, int(sample_rate * 0.002))
+	# --- Check 2: Duration (brief spike, fast decay) ---
+	# Walk forward from the peak to find where the envelope drops back
+	# below the decay threshold and stays there for 2ms.  A carrier
+	# transient decays exponentially within a few ms; voice energy
+	# persists much longer.  Reject if the spike lasts more than 15ms.
+	decay_threshold = pre_rms * ratio_threshold
+	decay_win = max(1, int(sample_rate * 0.002))  # 2ms settling window
 	spike_end = spike_idx
 	for j in range(spike_idx, len(env_s)):
-		if env_s[j] >= threshold:
+		if env_s[j] >= decay_threshold:
 			spike_end = j
 		elif j - spike_end > decay_win:
 			break
 
-	if (spike_end - spike_idx) / sample_rate * 1000 > 15:
+	spike_duration_ms = (spike_end - spike_idx) / sample_rate * 1000
+	if spike_duration_ms > 15:
 		return audio
+
+	# --- Check 3: Post-silence (decay back to quiet) ---
+	# The 20ms region after the spike must be quiet relative to the
+	# spike peak (< 25%).  A carrier transient decays to silence before
+	# voice begins; a voice plosive ('p', 't', 'k') is followed
+	# immediately by vowel energy at a comparable level.
+	post_start = min(len(audio), spike_end + decay_win)
+	post_end = min(len(audio), post_start + int(sample_rate * 0.02))  # 20ms
+	if post_end > post_start:
+		post_rms = float(numpy.sqrt(numpy.mean(audio[post_start:post_end] ** 2)))
+		if post_rms > spike_peak * 0.25:
+			return audio
 
 	trim_point = min(spike_end + decay_win, len(audio))
 	return audio[trim_point:]
@@ -101,29 +173,43 @@ def _trim_carrier_transient_start (audio: numpy.typing.NDArray[numpy.float32], s
 
 def _trim_carrier_transient_end (audio: numpy.typing.NDArray[numpy.float32], sample_rate: int) -> numpy.typing.NDArray[numpy.float32]:
 
-	"""
-	Remove a carrier key-OFF transient from the end of the audio.
+	"""Remove a carrier key-OFF transient from the end of the audio.
 
-	Scans the last 500ms for a sharp spike followed by silence.  Same
-	detection criteria as _trim_carrier_transient_start but applied to
-	the recording tail.  Uses a wider scan window than the start
-	because the key-OFF click may be followed by hold-timer noise.
+	Mirror of _trim_carrier_transient_start, applied to the recording
+	tail.  The key-OFF transient has the same shape (fast attack, brief
+	duration, exponential decay) but is followed by silence rather than
+	preceded by it.
+
+	Scans the last 500ms.  The window is wide because the RF hold timer
+	may keep the recording running after the key-OFF click.
+
+	Checks (mirroring start-trim):
+	  1. Post-silence: region after spike is at noise floor (ratio > 8x)
+	  2. Duration: spike is under 15ms
+	  3. Pre-silence: 20ms before spike is quiet (< 25% of spike peak)
 	"""
 
+	# --- Scan window: last 500ms ---
 	scan_len = min(len(audio), int(sample_rate * 0.5))
 	if scan_len < 10:
 		return audio
 
 	tail = audio[-scan_len:]
+
+	# --- Smoothed envelope (0.5ms window, same as start-trim) ---
 	env = numpy.abs(tail)
-	win = max(1, int(sample_rate * 0.0005))
+	win = max(1, int(sample_rate * 0.0005))  # 0.5ms = 8 samples at 16kHz
 	env_s = numpy.convolve(env, numpy.ones(win) / win, mode='same')
 
 	spike_idx = int(numpy.argmax(env_s))
 	spike_peak = float(env_s[spike_idx])
 
+	# --- Check 1: Post-silence ---
+	# The region after the spike must be at noise floor.  This is the
+	# primary discriminator: a key-OFF transient is followed by silence,
+	# while a voice consonant at the end of speech is preceded by voice.
 	post_start = min(scan_len, spike_idx + win)
-	min_post = int(sample_rate * 0.003)
+	min_post = int(sample_rate * 0.003)  # 3ms minimum post-silence region
 	if post_start > scan_len - min_post:
 		return audio
 
@@ -134,8 +220,11 @@ def _trim_carrier_transient_end (audio: numpy.typing.NDArray[numpy.float32], sam
 	if spike_peak / post_rms < substation.constants.CARRIER_TRANSIENT_RATIO:
 		return audio
 
+	# --- Check 2: Duration (brief spike) ---
+	# Walk backward from the peak to find the onset.  The transient
+	# must be under 15ms total.  2ms settling window for decay detection.
 	threshold = post_rms * substation.constants.CARRIER_TRANSIENT_RATIO
-	decay_win = max(1, int(sample_rate * 0.002))
+	decay_win = max(1, int(sample_rate * 0.002))  # 2ms settling window
 	spike_start = spike_idx
 	for j in range(spike_idx, -1, -1):
 		if env_s[j] >= threshold:
@@ -143,8 +232,20 @@ def _trim_carrier_transient_end (audio: numpy.typing.NDArray[numpy.float32], sam
 		elif spike_start - j > decay_win:
 			break
 
-	if (spike_idx - spike_start) / sample_rate * 1000 > 15:
+	spike_duration_ms = (spike_idx - spike_start) / sample_rate * 1000
+	if spike_duration_ms > 15:
 		return audio
+
+	# --- Check 3: Pre-silence (quiet before the spike) ---
+	# The 20ms region before the spike must be quiet relative to the
+	# spike peak (< 25%).  Rejects voice-final energy that happens to
+	# be followed by a quiet tail.
+	pre_check_end = max(0, spike_start - decay_win)
+	pre_check_start = max(0, pre_check_end - int(sample_rate * 0.02))  # 20ms
+	if pre_check_end > pre_check_start:
+		pre_rms = float(numpy.sqrt(numpy.mean(tail[pre_check_start:pre_check_end] ** 2)))
+		if pre_rms > spike_peak * 0.25:
+			return audio
 
 	trim_point = len(audio) - scan_len + max(0, spike_start - decay_win)
 	return audio[:trim_point]
@@ -252,9 +353,14 @@ class ChannelRecorder:
 		self.audio_sample_rate = audio_sample_rate
 		self.disk_flush_interval = disk_flush_interval_seconds
 		self.modulation = modulation
-		# Precompute soft limiter parameters for efficiency
+		# Precompute soft limiter parameters for efficiency.
+		# Ceiling is 0.98 (-0.18 dB) rather than 1.0 to prevent inter-sample
+		# (true-peak) overshoot: tanh limits individual samples, but the
+		# reconstructed waveform between samples can exceed the sample peaks
+		# by ~0.2 dB.  The 2% headroom absorbs this.
 		self.soft_limit_drive = max(0.1, float(soft_limit_drive))
-		self.soft_limit_scale = 1.0 / math.tanh(self.soft_limit_drive)
+		self.soft_limit_ceiling = 0.98
+		self.soft_limit_scale = self.soft_limit_ceiling / math.tanh(self.soft_limit_drive)
 		self.noise_reduction_enabled = noise_reduction_enabled
 		self.trim_carrier_transients = trim_carrier_transients
 		self.fade_in_ms = fade_in_ms
