@@ -128,18 +128,11 @@ class RadioScanner:
 
 		self.sample_rate = self.band_config.sample_rate
 		self.snr_threshold_db = self.band_config.snr_threshold_db
-		# Hysteresis: use a lower threshold to turn OFF than to turn ON
-		# This prevents rapid toggling when signal strength hovers near the threshold
-		self.snr_threshold_off_db = self.snr_threshold_db - substation.constants.HYSTERESIS_DB
-
-		# Validate that the off threshold makes sense (must be positive)
-		if self.snr_threshold_db <= substation.constants.HYSTERESIS_DB:
-
-			logger.error(f"CONFIG ERROR: Band '{band_name}' has snr_threshold_db ({self.snr_threshold_db} dB) <= HYSTERESIS_DB ({substation.constants.HYSTERESIS_DB} dB)")
-			logger.error(f"This would result in snr_threshold_off_db = {self.snr_threshold_off_db} dB")
-			logger.error(f"Channels would never turn OFF because SNR rarely drops to 0 or below")
-			logger.error(f"Please set snr_threshold_db to at least {substation.constants.HYSTERESIS_DB + 0.1} dB")
-			raise ValueError(f"Invalid snr_threshold_db for band '{band_name}': must be > {substation.constants.HYSTERESIS_DB} dB")
+		# Hysteresis: use a lower threshold to turn OFF than to turn ON.
+		# This prevents rapid toggling when signal strength hovers near threshold.
+		# The OFF threshold can be negative for weak-signal scanning — this means
+		# the channel turns off only when it drops back to the noise floor.
+		self.snr_threshold_off_db = self.snr_threshold_db - self.band_config.hysteresis_db
 
 		self.sdr_gain_db = self.band_config.sdr_gain_db
 

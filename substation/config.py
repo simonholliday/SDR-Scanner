@@ -459,6 +459,13 @@ class BandConfig(pydantic.BaseModel):
 			control, external clock configuration, or device calibration.
 			Keys and values are device-specific strings.
 
+		hysteresis_db: Margin in dB between the ON and OFF thresholds.
+			A channel turns ON when SNR > snr_threshold_db, and OFF when
+			SNR < (snr_threshold_db - hysteresis_db).  This prevents rapid
+			toggling when SNR hovers near threshold.  Default 3.0 dB is
+			good for strong signals; use a lower value (e.g. 1.5) when
+			scanning weak signals with a low snr_threshold_db.
+
 		activation_variance_db: Minimum power variance (dB) across segment PSDs
 			required for a channel to be considered active.  Suppresses
 			channel triggers caused by stationary noise that crosses the SNR
@@ -482,6 +489,7 @@ class BandConfig(pydantic.BaseModel):
 	recording_enabled: bool = False
 	exclude_channel_indices: list[int] = pydantic.Field(default_factory=list)
 	snr_threshold_db: float = pydantic.Field(default=12.0)
+	hysteresis_db: float = pydantic.Field(default=3.0, ge=0)
 	sdr_gain_db: float | str | None = 'auto'
 	sdr_gain_elements: dict[str, float] | None = None
 	sdr_device_settings: dict[str, str] | None = None
@@ -543,11 +551,14 @@ class BandConfig(pydantic.BaseModel):
 		if self.channel_width is None:
 			self.channel_width = self.channel_spacing * substation.constants.CHANNEL_WIDTH_FRACTION
 
-		# Ensure SNR threshold is high enough for hysteresis
-		# OFF threshold = ON threshold - HYSTERESIS_DB, so ON must be > HYSTERESIS_DB
-		if self.snr_threshold_db <= substation.constants.HYSTERESIS_DB:
-			raise ValueError(
-				f"snr_threshold_db must be > {substation.constants.HYSTERESIS_DB} dB to allow OFF hysteresis"
+		# Warn if SNR threshold is at or below hysteresis margin.
+		# OFF threshold = snr_threshold_db - hysteresis_db, which can go
+		# negative (means "turn off at noise floor") — valid for weak signals.
+		if self.snr_threshold_db <= self.hysteresis_db:
+			logger.warning(
+				f"snr_threshold_db ({self.snr_threshold_db}) <= hysteresis_db ({self.hysteresis_db}): "
+				f"OFF threshold will be {self.snr_threshold_db - self.hysteresis_db:.1f} dB "
+				f"(channel turns off at noise floor level)"
 			)
 
 		# Warn if per-element gain overrides sdr_gain_db

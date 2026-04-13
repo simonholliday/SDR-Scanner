@@ -3,10 +3,6 @@
 import substation.constants
 
 
-def test_hysteresis_positive ():
-	assert substation.constants.HYSTERESIS_DB > 0
-
-
 def test_welch_segments_minimum ():
 	assert substation.constants.WELCH_SEGMENTS >= 2
 

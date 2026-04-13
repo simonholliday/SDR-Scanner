@@ -115,10 +115,12 @@ class TestBandValidation:
 		with pytest.raises(pydantic.ValidationError):
 			substation.config.validate_config(minimal_config_dict)
 
-	def test_snr_threshold_below_hysteresis_raises (self, minimal_config_dict):
+	def test_snr_threshold_below_hysteresis_warns (self, minimal_config_dict, caplog):
 		minimal_config_dict["bands"]["test_nfm"]["snr_threshold_db"] = 2.0
-		with pytest.raises(pydantic.ValidationError):
-			substation.config.validate_config(minimal_config_dict)
+		with caplog.at_level(logging.WARNING):
+			config = substation.config.validate_config(minimal_config_dict)
+		assert config.bands["test_nfm"].snr_threshold_db == 2.0
+		assert "OFF threshold" in caplog.text
 
 	def test_sample_rate_below_band_span_accepted (self, minimal_config_dict):
 		# Band span vs sample_rate is checked at scanner init, not config validation.

@@ -95,12 +95,6 @@ SSB_LPF_ORDER = 8
 # Channel Detection and Scanning Constants
 # ==============================================================================
 
-# Hysteresis margin for channel state detection
-# Channel turns ON when SNR > threshold, OFF when SNR < (threshold - HYSTERESIS_DB)
-# This prevents rapid on/off toggling (chattering) when SNR hovers near threshold
-# 3 dB is ~2x power ratio, provides stable switching
-HYSTERESIS_DB = 3.0  # 3 dB margin
-
 # Fraction of channel spacing to use as channel bandwidth
 # For example, with 12.5 kHz spacing: channel width = 12.5 * 0.84 = 10.5 kHz
 # Leaves a small guard band (0.16 * spacing) between channels to reduce crosstalk

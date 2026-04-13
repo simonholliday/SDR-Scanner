@@ -515,6 +515,7 @@ Per-band keys:
 - `modulation`: `AM`, `NFM`, `USB`, or `LSB`. USB/LSB use a Weaver-method SSB demodulator and are the right choice for HF voice — amateur convention is LSB below 10 MHz, USB above 10 MHz; HFGCS, VOLMET, and marine HF are all USB.
 - `recording_enabled`: enable recording for this band. Optional, defaults to `false` (can also be set in `band_defaults`).
 - `snr_threshold_db`: detection threshold (dB above noise floor).
+- `hysteresis_db`: margin between ON and OFF thresholds (default 3.0). Channel turns OFF when SNR drops below `snr_threshold_db - hysteresis_db`. Lower values (e.g. 1.5) suit weak-signal scanning.
 - `activation_variance_db`: optional minimum power variance (dB) across the detection window required for a channel to be considered active. Filters out stationary-noise triggers. Applies to all bands regardless of recording state. See [Rejecting empty/noise recordings](#rejecting-emptynoise-recordings) below. Defaults to `3.0`; set to `0` to disable.
 - `sdr_gain_db`: numeric or `auto`.
 - `sdr_gain_elements`: optional dict mapping gain element names to dB values for per-stage control (e.g., `{LNA: 10, MIX: 5, VGA: 12}`). Available elements are logged at startup. Takes priority over `sdr_gain_db`.
@@ -642,7 +643,7 @@ The `snr_threshold_db` setting controls how far above the noise floor a signal m
 
 - If you're getting recordings that are mostly noise, raise the threshold by 1-2 dB at a time, *and* enable [`activation_variance_db`](#rejecting-emptynoise-recordings) if you haven't already — variance rejection catches the noise triggers that the SNR check can't distinguish.
 - If you're missing transmissions you can hear on a handheld scanner, lower the threshold.
-- The OFF threshold is always 3 dB below the ON threshold (hysteresis) to prevent rapid toggling.
+- The OFF threshold is `snr_threshold_db - hysteresis_db` (default 3 dB below ON) to prevent rapid toggling. Set `hysteresis_db` lower for weak-signal scanning.
 
 **General tips**:
 - Available gain element names and their valid ranges are logged at INFO level on startup. Check these before setting values.
@@ -732,7 +733,7 @@ bands:
 | `activation_variance_db` | Gate 1, only on turn-on transitions, only when the SNR check passed. |
 | `discard_empty_enabled` | Gates 2 and 3b. Gate 2 runs after Gate 1 passes. Gate 3b runs on recording close. |
 | `min_recording_seconds` | Gate 3a. Runs on recording close, before Gate 3b. Set to `0` to disable. |
-| Hysteresis (built-in 3 dB margin) | Unchanged. Once a recording starts, it continues until SNR drops below `snr_threshold_db - 3`. |
+| Hysteresis (`hysteresis_db`, default 3.0) | Unchanged. Once a recording starts, it continues until SNR drops below `snr_threshold_db - hysteresis_db`. |
 | Hold time (`recording_hold_time_ms`) | Unchanged. Brief drops in SNR during active recording are tolerated. Gate 3b may discard if the hold timer extends the recording far beyond the actual signal. |
 
 All three gates suppress silently — no ON callback fires, no recording file is kept. Downstream consumers (OSC bridge, user scripts) only see activations and recordings that passed all applicable gates.
