@@ -1640,13 +1640,19 @@ class RadioScanner:
 							audio, _pad = self._refine_trim_on_audio(audio, turning_on=False)
 
 						if turning_on and new_state:
-							# Log CTCSS/DCS detection from the first demod block.
+							# Log CTCSS/DCS detection from the first demod block
+							# and embed in recording metadata.
 							ctcss = new_state.get('detected_ctcss')
 							dcs = new_state.get('detected_dcs')
 							if ctcss is not None:
 								logger.info(f"Channel {idx} ({channel_freq/1e6:.5f} MHz): CTCSS {ctcss:.1f} Hz")
 							elif dcs is not None:
 								logger.info(f"Channel {idx} ({channel_freq/1e6:.5f} MHz): DCS {dcs:03o}")
+
+							if ctcss is not None or dcs is not None:
+								rec = self.channel_recorders.get(channel_freq)
+								if rec:
+									rec.set_tone_code(ctcss=ctcss, dcs=dcs)
 
 						if not turning_off:
 							self.channel_demod_state[channel_freq] = new_state

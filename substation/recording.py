@@ -552,6 +552,39 @@ class ChannelRecorder:
 
 		logger.debug(f"Started recording channel {channel_index} (f = {channel_freq/1e6:.5f} MHz) to {self.filepath}")
 
+	def set_tone_code (self, ctcss: float | None = None, dcs: int | None = None) -> None:
+
+		"""Update recording metadata with detected CTCSS tone or DCS code.
+
+		Called by the scanner after the first demodulated audio block
+		reveals a subaudible tone.  Updates both the JSON description
+		and the coding history string in the BEXT/Vorbis metadata.
+		"""
+
+		if not self.bext_metadata:
+			return
+
+		# Update the JSON description with the tone info.
+		try:
+			desc = json.loads(self.bext_metadata['description'])
+		except (json.JSONDecodeError, TypeError):
+			desc = {}
+
+		if ctcss is not None:
+			desc['ctcss'] = ctcss
+			tone_str = f"CTCSS={ctcss:.1f}Hz"
+		elif dcs is not None:
+			desc['dcs'] = f"{dcs:03o}"
+			tone_str = f"DCS={dcs:03o}"
+		else:
+			return
+
+		self.bext_metadata['description'] = json.dumps(desc, separators=(",", ":"), ensure_ascii=True)
+
+		# Append tone info to coding history.
+		history = self.bext_metadata['coding_history'].rstrip('\r\n')
+		self.bext_metadata['coding_history'] = f"{history};{tone_str}\r\n"
+
 	def append_audio (self, samples: numpy.typing.NDArray[numpy.float32]) -> None:
 
 		"""
