@@ -23,6 +23,12 @@ scanner:
     # Set to null to disable. Recommended: 30-120 seconds.
     stuck_channel_threshold_seconds: 60
 
+# Supervisor dashboard — broadcasts scanner events via WebSocket for
+# real-time display.  Requires: pip install -e ".[supervisor]"
+supervisor:
+    enabled: false
+    port: 9004
+
 recording:
 
     # Maximum in-memory buffer per channel (seconds)

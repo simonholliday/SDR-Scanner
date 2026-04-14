@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import functools
 import logging
 import os
 import pathlib
@@ -223,6 +224,9 @@ class RadioScanner:
 		# Channel state tracking: True = on, False = off
 		self.channel_states: dict[float, bool] = {ch_freq: False for ch_freq in self.channels}
 
+		# Latest SNR per channel (updated every processing slice, used by event consumers)
+		self.channel_snr: dict[float, float] = {}
+
 		# Stuck channel tracking
 		self.channel_start_times: dict[float, float] = {}
 		self.channel_last_warning_times: dict[float, float] = {}
@@ -230,11 +234,11 @@ class RadioScanner:
 		# Channel recorders: one per active channel
 		self.channel_recorders: dict[float, substation.recording.ChannelRecorder] = {}
 
-		# Callbacks for channel state changes (ON/OFF)
-		self.state_callbacks: list[typing.Callable] = []
-
-		# Callbacks for completed recordings (Finalized)
-		self.recording_callbacks: list[typing.Callable] = []
+		# Event handlers: unified pub/sub for all scanner events.
+		# Consumers register via scanner.on('event_name', handler).
+		# Events: channel_state, recording_saved, recording_started,
+		#         noise_floor, channel_snr.
+		self._event_handlers: dict[str, list[typing.Callable]] = {}
 
 		# SDR device (typed as Any because scanner accesses device-specific
 		# attributes like read_samples and freq_correction beyond BaseDevice)
@@ -349,29 +353,86 @@ class RadioScanner:
 		n_channels = int(round((self.freq_end - self.freq_start) / self.channel_spacing)) + 1
 		return [self.freq_start + i * self.channel_spacing for i in range(n_channels)]
 
-	def add_state_callback (self, callback: typing.Callable) -> None:
-		
-		"""
-		Add a callback function to be called when a channel changes state.
+	def on (self, event: str, handler: typing.Callable) -> None:
 
-		The callback should accept (band_name: str, channel_index: int, is_active: bool, snr_db: float).
-		Synchronous and asynchronous callbacks are both supported and will be
-		executed on the main event loop.
+		"""Subscribe to a scanner event.
+
+		Events:
+			channel_state    — (band, index, freq, is_active, snr_db)
+			recording_started — (band, index, freq)
+			recording_saved  — (band, index, freq, file_path)
+			noise_floor      — (noise_floor_db, warmup_complete)
+			channel_snr      — (channels: list[dict])
+
+		Handlers may be sync or async. They are called on the event
+		loop thread via emit().
 		"""
-		
-		self.state_callbacks.append(callback)
+
+		self._event_handlers.setdefault(event, []).append(handler)
+
+	def off (self, event: str, handler: typing.Callable) -> None:
+
+		"""Unsubscribe a handler from an event."""
+
+		handlers = self._event_handlers.get(event)
+		if handlers:
+			try:
+				handlers.remove(handler)
+			except ValueError:
+				pass
+
+	def emit (self, event: str, loop: asyncio.AbstractEventLoop | None = None, **kwargs: typing.Any) -> None:
+
+		"""Fire all handlers registered for an event.
+
+		Sync handlers are called via loop.call_soon_threadsafe.
+		Async handlers are scheduled via run_coroutine_threadsafe.
+		If no loop is provided, handlers are called directly (for
+		use from the event loop thread itself).
+		"""
+
+		handlers = self._event_handlers.get(event)
+		if not handlers:
+			return
+
+		for handler in handlers:
+			try:
+				if asyncio.iscoroutinefunction(handler):
+					if loop:
+						asyncio.run_coroutine_threadsafe(handler(**kwargs), loop)
+				elif loop:
+					# call_soon_threadsafe only accepts *args, not **kwargs.
+					loop.call_soon_threadsafe(functools.partial(handler, **kwargs))
+				else:
+					handler(**kwargs)
+			except Exception:
+				logger.debug(f"Event handler error for '{event}'", exc_info=True)
+
+	def add_state_callback (self, callback: typing.Callable) -> None:
+
+		"""Backward-compatible wrapper: subscribe to channel_state events.
+
+		The callback receives (band_name, channel_index, is_active, snr_db)
+		as positional arguments.
+		"""
+
+		def _adapter (**kwargs: typing.Any) -> None:
+			callback(kwargs['band'], kwargs['index'], kwargs['is_active'], kwargs['snr_db'])
+
+		self.on('channel_state', _adapter)
 
 	def add_recording_callback (self, callback: typing.Callable) -> None:
-		
-		"""
-		Add a callback function to be called when a recording is finished and saved.
 
-		The callback should accept (band_name: str, channel_index: int, file_path: str).
-		Synchronous and asynchronous callbacks are both supported and will be
-		executed on the main event loop.
+		"""Backward-compatible wrapper: subscribe to recording_saved events.
+
+		The callback receives (band_name, channel_index, file_path)
+		as positional arguments.
 		"""
-		
-		self.recording_callbacks.append(callback)
+
+		def _adapter (**kwargs: typing.Any) -> None:
+			callback(kwargs['band'], kwargs['index'], kwargs['file_path'])
+
+		self.on('recording_saved', _adapter)
 
 	def _precompute_fft_params (self) -> None:
 
@@ -1055,14 +1116,10 @@ class RadioScanner:
 
 				self._start_channel_recording(channel_freq, channel_index, snr_db, loop)
 
-			# Trigger state change callbacks on the main event loop
-			for callback in self.state_callbacks:
-
-				if asyncio.iscoroutinefunction(callback):
-					asyncio.run_coroutine_threadsafe(callback(self.band_name, channel_index, is_active, snr_db), loop)
-
-				else:
-					loop.call_soon_threadsafe(callback, self.band_name, channel_index, is_active, snr_db)
+			# Emit channel state event
+			self.emit('channel_state', loop=loop,
+				band=self.band_name, index=channel_index, freq=channel_freq,
+				is_active=is_active, snr_db=snr_db)
 
 		return trim_start, trim_end, sample_offset, turning_on, turning_off
 
@@ -1302,6 +1359,9 @@ class RadioScanner:
 		# Store recorder
 		self.channel_recorders[channel_freq] = channel_recorder
 
+		self.emit('recording_started', loop=loop,
+			band=self.band_name, index=channel_index, freq=channel_freq)
+
 	async def _stop_channel_recording (self, channel_freq: float) -> None:
 		
 		"""
@@ -1327,10 +1387,15 @@ class RadioScanner:
 		# min_recording_seconds.  Brief transients (radar pulses,
 		# ignition noise) can pass Gates 1 and 2 but produce useless
 		# sub-second files.  Set to 0 in config to disable.
+		# _stop_channel_recording runs as a coroutine on the event loop,
+		# so emit() calls here don't need loop= (handlers run directly).
+
 		min_dur = self.recording_config.min_recording_seconds
 		if min_dur > 0 and duration < min_dur and os.path.exists(filepath):
 			os.remove(filepath)
 			logger.info(f"Discarded short recording ({duration:.2f}s < {min_dur:.1f}s): {os.path.basename(filepath)}")
+			self.emit('recording_discarded',
+				band=self.band_name, index=ch_idx, freq=channel_freq)
 			del self.channel_recorders[channel_freq]
 			return
 
@@ -1346,22 +1411,15 @@ class RadioScanner:
 				if substation.recording.ChannelRecorder.check_empty(filepath):
 					os.remove(filepath)
 					logger.info(f"Discarded empty recording: {os.path.basename(filepath)}")
+					self.emit('recording_discarded',
+						band=self.band_name, index=ch_idx, freq=channel_freq)
 					del self.channel_recorders[channel_freq]
 					return
 			except (OSError, ValueError) as exc:
 				logger.debug(f"Empty-check failed for {filepath}: {exc}")
 
-		loop = self.loop or asyncio.get_running_loop()
-
-		for callback in self.recording_callbacks:
-
-			if asyncio.iscoroutinefunction(callback):
-
-				asyncio.run_coroutine_threadsafe(callback(self.band_name, ch_idx, filepath), loop)
-
-			else:
-
-				loop.call_soon_threadsafe(callback, self.band_name, ch_idx, filepath)
+		self.emit('recording_saved',
+			band=self.band_name, index=ch_idx, freq=channel_freq, file_path=filepath)
 
 		# Remove from dictionary
 		del self.channel_recorders[channel_freq]
@@ -1457,6 +1515,11 @@ class RadioScanner:
 			noise_floor_db = self._noise_floor_ema
 			self._last_noise_floor_db = noise_floor_db
 
+			# Emit noise floor event (every slice).
+			self.emit('noise_floor',
+				noise_floor_db=round(noise_floor_db, 1),
+				warmup_complete=self._warmup_remaining <= 0)
+
 			# Warmup: absorb SDR startup transients before enabling detection.
 			if self._warmup_remaining > 0:
 				self._warmup_remaining -= 1
@@ -1494,6 +1557,7 @@ class RadioScanner:
 			for i, channel_freq in enumerate(self.channels):
 				idx = self.channel_original_indices.get(channel_freq, -1)
 				snr_db = channel_powers[i] - noise_floor_db
+				self.channel_snr[channel_freq] = snr_db
 				current_state = self.channel_states[channel_freq]
 
 				# Stuck channel detection: warn if PTT seems stuck or interference is constant.
@@ -1674,6 +1738,19 @@ class RadioScanner:
 					if channel_freq in self.channel_recorders:
 						asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
 
+			# Emit per-channel SNR snapshot (every slice, after transitions).
+			# Fields match the Supervisor spec: frequency_mhz, duration_active_s.
+			self.emit('channel_snr', channels=[
+				{
+					"index": self.channel_original_indices.get(freq, -1),
+					"frequency_mhz": round(freq / 1e6, 6),
+					"snr_db": round(self.channel_snr.get(freq, 0.0), 1),
+					"is_active": self.channel_states.get(freq, False),
+					"duration_active_s": round(now - self.channel_start_times[freq], 1) if self.channel_states.get(freq) and freq in self.channel_start_times else 0.0,
+				}
+				for freq in self.channels
+			])
+
 			# Update sample counter for continuous phase tracking
 			self.sample_counter += len(samples)
 		finally:
@@ -1759,6 +1836,10 @@ class RadioScanner:
 					samples,
 					loop
 				)
+
+				# Yield to other async tasks (WebSocket broadcast, etc.) so
+				# they don't starve when slices arrive back-to-back.
+				await asyncio.sleep(0)
 
 		except KeyboardInterrupt:
 			logger.info("Scan interrupted by user")

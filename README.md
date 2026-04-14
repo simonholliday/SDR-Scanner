@@ -854,6 +854,10 @@ If you see repeated `Sample queue full` warnings, reduce the band's `sample_rate
 - Processing is slice-based; extremely wide bands or multiple high-rate scans can exceed real-time capacity on low-power CPUs.
 - If you enable `apply_noisereduce` (requires code change), it is CPU-intensive for long chunks; on constrained devices, stick with the default `apply_spectral_subtraction` or reduce `disk_flush_interval_seconds`.
 
+## Roadmap
+
+- **Supervisor dashboard** (in progress) — a real-time browser dashboard that displays scanner state (active channels, SNR levels, noise floor, recordings) via WebSocket. The scanner emits structured events which the [Supervisor](https://github.com/simonholliday/supervisor) server relays to connected clients. Install with `pip install -e ".[supervisor]"` and enable in `config.yaml`.
+
 ## Author
 Written by Simon Holliday ([https://simonholliday.com/](https://simonholliday.com/))
 

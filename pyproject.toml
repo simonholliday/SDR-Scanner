@@ -53,6 +53,14 @@ osc = [
     "python-osc>=1.8",
 ]
 
+# Supervisor dashboard — install with `pip install -e ".[supervisor]"`.
+# Pulls in the supervisor package which provides the WebSocket
+# broadcast server for the real-time dashboard.
+supervisor = [
+    # SSH while repo is private; switch to git+https:// when public.
+    "supervisor @ git+ssh://git@github.com/simonholliday/supervisor.git",
+]
+
 [project.scripts]
 substation = "substation.cli:main"
 
@@ -87,5 +95,8 @@ module = [
     "mutagen",
     "noisereduce",
     "soundfile",
+    "supervisor",
+    "supervisor.app",
+    "supervisor.app.substation",
 ]
 ignore_missing_imports = true

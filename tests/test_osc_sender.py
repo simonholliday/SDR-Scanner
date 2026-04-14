@@ -165,8 +165,7 @@ class TestAttach:
 	def test_registers_both_callbacks (self):
 
 		"""
-		attach() should call add_state_callback and add_recording_callback
-		on the scanner, each with the sender's bound method.
+		attach() should register event handlers via scanner.on().
 		"""
 
 		sender = substation.osc_sender.OscEventSender()
@@ -174,8 +173,11 @@ class TestAttach:
 
 		sender.attach(mock_scanner)
 
-		mock_scanner.add_state_callback.assert_called_once_with(sender.on_state_change)
-		mock_scanner.add_recording_callback.assert_called_once_with(sender.on_recording_saved)
+		# attach() should call scanner.on() twice: once for channel_state, once for recording_saved
+		assert mock_scanner.on.call_count == 2
+		event_names = [call.args[0] for call in mock_scanner.on.call_args_list]
+		assert 'channel_state' in event_names
+		assert 'recording_saved' in event_names
 
 
 # ---------------------------------------------------------------------------

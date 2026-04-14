@@ -167,15 +167,29 @@ class OscEventSender:
 			except (OSError, ValueError, TypeError) as exc:
 				logger.warning(f"OSC /sample/import send failed: {exc}")
 
+	def _on_state_event (self, **kwargs: typing.Any) -> None:
+
+		"""Event adapter: converts kwargs to positional args for on_state_change."""
+
+		self.on_state_change(
+			kwargs['band'], kwargs['index'], kwargs['is_active'], kwargs['snr_db']
+		)
+
+	def _on_recording_event (self, **kwargs: typing.Any) -> None:
+
+		"""Event adapter: converts kwargs to positional args for on_recording_saved."""
+
+		self.on_recording_saved(
+			kwargs['band'], kwargs['index'], kwargs['file_path']
+		)
+
 	def attach (self, scanner: "substation.scanner.RadioScanner") -> None:
 
 		"""
-		Register this sender's methods as scanner callbacks.
+		Register this sender as a listener on the scanner's event emitter.
 
-		Equivalent to calling scanner.add_state_callback(self.on_state_change)
-		and scanner.add_recording_callback(self.on_recording_saved), but
-		presented as a single call so the consumer script stays tidy.
+		Subscribes to channel_state and recording_saved events.
 		"""
 
-		scanner.add_state_callback(self.on_state_change)
-		scanner.add_recording_callback(self.on_recording_saved)
+		scanner.on('channel_state', self._on_state_event)
+		scanner.on('recording_saved', self._on_recording_event)
