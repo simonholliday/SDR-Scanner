@@ -103,25 +103,35 @@ class OscEventSender:
 		channel_index: int,
 		is_active: bool,
 		snr_db: float,
+		ctcss_hz: float | None = None,
+		dcs_code: int | None = None,
 	) -> None:
 
 		"""
 		Scanner state-change callback: emit /radio/state to the sequencer.
 
-		Matches the sync-callback signature documented on
-		RadioScanner.add_state_callback().  Runs on the scanner's event
-		loop thread via loop.call_soon_threadsafe(), so it must return
-		quickly and never raise.
+		Wire format: [band, channel, is_active, snr_db, ctcss_hz, dcs_code].
+		OSC has no native null — ctcss_hz is 0.0 when no CTCSS tone was
+		detected (valid tones start at 67 Hz); dcs_code is 0 when no DCS
+		code was detected (valid codes are nonzero).
+
+		Runs on the scanner's event loop thread via
+		loop.call_soon_threadsafe(), so it must return quickly and
+		never raise.
 		"""
 
 		# OSC has no native boolean — encode as 0 or 1.  Explicit ternary
 		# instead of int(is_active) so the intent is obvious at a glance.
 		active_int = 1 if is_active else 0
 
+		# Null-as-sentinel mapping.  See docstring for the rationale.
+		ctcss_f = float(ctcss_hz) if ctcss_hz is not None else 0.0
+		dcs_i = int(dcs_code) if dcs_code is not None else 0
+
 		try:
 			self._client.send_message(
 				'/radio/state',
-				[band_name, int(channel_index), active_int, float(snr_db)],
+				[band_name, int(channel_index), active_int, float(snr_db), ctcss_f, dcs_i],
 			)
 
 		except (OSError, ValueError, TypeError) as exc:
@@ -138,23 +148,32 @@ class OscEventSender:
 		band_name: str,
 		channel_index: int,
 		file_path: str,
+		ctcss_hz: float | None = None,
+		dcs_code: int | None = None,
 	) -> None:
 
 		"""
 		Scanner recording-saved callback: emit /radio/recording to the
 		sequencer, and /sample/import to the sampler if one is configured.
 
-		Matches the sync-callback signature documented on
-		RadioScanner.add_recording_callback().  Runs on the scanner's
-		event loop thread.
+		Wire format for /radio/recording: [band, channel, file_path,
+		ctcss_hz, dcs_code].  Same sentinel convention as on_state_change
+		— 0.0 / 0 mean "no tone detected".  /sample/import wire format
+		is unchanged (just the file path); the sampler can parse the
+		recording's metadata if it needs the tone.
+
+		Runs on the scanner's event loop thread.
 		"""
 
 		path_str = str(file_path)
 
+		ctcss_f = float(ctcss_hz) if ctcss_hz is not None else 0.0
+		dcs_i = int(dcs_code) if dcs_code is not None else 0
+
 		try:
 			self._client.send_message(
 				'/radio/recording',
-				[band_name, int(channel_index), path_str],
+				[band_name, int(channel_index), path_str, ctcss_f, dcs_i],
 			)
 
 		except (OSError, ValueError, TypeError) as exc:
@@ -172,7 +191,8 @@ class OscEventSender:
 		"""Event adapter: converts kwargs to positional args for on_state_change."""
 
 		self.on_state_change(
-			kwargs['band'], kwargs['index'], kwargs['is_active'], kwargs['snr_db']
+			kwargs['band'], kwargs['index'], kwargs['is_active'], kwargs['snr_db'],
+			ctcss_hz=kwargs.get('ctcss_hz'), dcs_code=kwargs.get('dcs_code'),
 		)
 
 	def _on_recording_event (self, **kwargs: typing.Any) -> None:
@@ -180,7 +200,8 @@ class OscEventSender:
 		"""Event adapter: converts kwargs to positional args for on_recording_saved."""
 
 		self.on_recording_saved(
-			kwargs['band'], kwargs['index'], kwargs['file_path']
+			kwargs['band'], kwargs['index'], kwargs['file_path'],
+			ctcss_hz=kwargs.get('ctcss_hz'), dcs_code=kwargs.get('dcs_code'),
 		)
 
 	def attach (self, scanner: "substation.scanner.RadioScanner") -> None:

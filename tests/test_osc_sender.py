@@ -50,7 +50,7 @@ class TestOnStateChange:
 
 	def test_active_sends_one (self, patched_send_message):
 
-		"""An active channel change sends /radio/state with is_active=1."""
+		"""An active channel change sends /radio/state with is_active=1 and no-tone sentinels."""
 
 		sender = substation.osc_sender.OscEventSender()
 		sender.on_state_change('pmr', 3, True, 15.2)
@@ -58,7 +58,7 @@ class TestOnStateChange:
 		assert patched_send_message.call_count == 1
 		address, args = patched_send_message.call_args[0]
 		assert address == '/radio/state'
-		assert args == ['pmr', 3, 1, 15.2]
+		assert args == ['pmr', 3, 1, 15.2, 0.0, 0]
 
 	def test_inactive_sends_zero (self, patched_send_message):
 
@@ -69,7 +69,27 @@ class TestOnStateChange:
 
 		address, args = patched_send_message.call_args[0]
 		assert address == '/radio/state'
-		assert args == ['pmr', 7, 0, 3.4]
+		assert args == ['pmr', 7, 0, 3.4, 0.0, 0]
+
+	def test_ctcss_included_when_detected (self, patched_send_message):
+
+		"""A detected CTCSS tone rides along on /radio/state as the 5th arg."""
+
+		sender = substation.osc_sender.OscEventSender()
+		sender.on_state_change('pmr', 3, True, 15.2, ctcss_hz=136.5, dcs_code=None)
+
+		_, args = patched_send_message.call_args[0]
+		assert args == ['pmr', 3, 1, 15.2, 136.5, 0]
+
+	def test_dcs_included_when_detected (self, patched_send_message):
+
+		"""A detected DCS code rides along on /radio/state as the 6th arg."""
+
+		sender = substation.osc_sender.OscEventSender()
+		sender.on_state_change('pmr', 3, True, 15.2, ctcss_hz=None, dcs_code=0o023)
+
+		_, args = patched_send_message.call_args[0]
+		assert args == ['pmr', 3, 1, 15.2, 0.0, 0o023]
 
 	def test_numpy_snr_coerced_to_float (self, patched_send_message):
 
@@ -110,7 +130,18 @@ class TestOnRecordingSaved:
 		assert patched_send_message.call_count == 1
 		address, args = patched_send_message.call_args[0]
 		assert address == '/radio/recording'
-		assert args == ['pmr', 3, '/tmp/foo.wav']
+		assert args == ['pmr', 3, '/tmp/foo.wav', 0.0, 0]
+
+	def test_recording_tone_fields_included (self, patched_send_message):
+
+		"""Detected tone on recording_saved rides along as trailing args."""
+
+		sender = substation.osc_sender.OscEventSender()
+		sender.on_recording_saved('pmr', 3, '/tmp/foo.wav', ctcss_hz=136.5, dcs_code=None)
+
+		address, args = patched_send_message.call_args[0]
+		assert address == '/radio/recording'
+		assert args == ['pmr', 3, '/tmp/foo.wav', 136.5, 0]
 
 	def test_with_sampler_sends_both_messages (self, patched_send_message):
 
@@ -132,7 +163,7 @@ class TestOnRecordingSaved:
 		second_address, second_args = patched_send_message.call_args_list[1][0]
 
 		assert first_address == '/radio/recording'
-		assert first_args == ['pmr', 3, '/tmp/foo.wav']
+		assert first_args == ['pmr', 3, '/tmp/foo.wav', 0.0, 0]
 
 		assert second_address == '/sample/import'
 		assert second_args == ['/tmp/foo.wav']
@@ -148,12 +179,13 @@ class TestOnRecordingSaved:
 		sender = substation.osc_sender.OscEventSender(sampler_host='127.0.0.1')
 		sender.on_recording_saved('pmr', 3, pathlib.Path('/tmp/foo.wav'))
 
-		for call in patched_send_message.call_args_list:
-			address, args = call[0]
-			# The last positional arg is always the path (both addresses)
-			path_arg = args[-1]
-			assert type(path_arg) is str
-			assert path_arg == '/tmp/foo.wav'
+		# /radio/recording: path is 3rd arg (before the two tone fields).
+		# /sample/import: path is the only arg.
+		radio_args = patched_send_message.call_args_list[0][0][1]
+		assert type(radio_args[2]) is str and radio_args[2] == '/tmp/foo.wav'
+
+		sampler_args = patched_send_message.call_args_list[1][0][1]
+		assert type(sampler_args[0]) is str and sampler_args[0] == '/tmp/foo.wav'
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +210,35 @@ class TestAttach:
 		event_names = [call.args[0] for call in mock_scanner.on.call_args_list]
 		assert 'channel_state' in event_names
 		assert 'recording_saved' in event_names
+
+
+class TestEventAdapters:
+
+	def test_state_adapter_forwards_tone_kwargs (self, patched_send_message):
+
+		"""_on_state_event pulls ctcss_hz / dcs_code from kwargs and forwards them."""
+
+		sender = substation.osc_sender.OscEventSender()
+		sender._on_state_event(
+			band='pmr', index=3, freq=446e6, is_active=True, snr_db=15.2,
+			ctcss_hz=136.5, dcs_code=None,
+		)
+
+		_, args = patched_send_message.call_args[0]
+		assert args == ['pmr', 3, 1, 15.2, 136.5, 0]
+
+	def test_recording_adapter_forwards_tone_kwargs (self, patched_send_message):
+
+		"""_on_recording_event pulls ctcss_hz / dcs_code from kwargs and forwards them."""
+
+		sender = substation.osc_sender.OscEventSender()
+		sender._on_recording_event(
+			band='pmr', index=3, freq=446e6, file_path='/tmp/foo.wav',
+			ctcss_hz=None, dcs_code=0o023,
+		)
+
+		_, args = patched_send_message.call_args[0]
+		assert args == ['pmr', 3, '/tmp/foo.wav', 0.0, 0o023]
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +289,7 @@ class TestErrorHandling:
 
 		# Sequencer message still went out
 		seq_mock.assert_called_once_with(
-			'/radio/recording', ['pmr', 3, '/tmp/foo.wav']
+			'/radio/recording', ['pmr', 3, '/tmp/foo.wav', 0.0, 0]
 		)
 
 		# Sampler failure logged

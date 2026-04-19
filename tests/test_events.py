@@ -63,6 +63,26 @@ class TestEventEmitter:
 		assert len(received) == 1
 		assert received[0] == ('pmr', 3, True, 8.5)
 
+	def test_recording_saved_carries_tone_fields (self, scanner_instance):
+		"""recording_saved handlers receive ctcss_hz and dcs_code as kwargs."""
+		received = []
+		scanner_instance.on('recording_saved', lambda **kw: received.append(kw))
+
+		scanner_instance.emit('recording_saved',
+			band='pmr', index=7, freq=446e6, file_path='/tmp/a.wav',
+			ctcss_hz=136.5, dcs_code=None)
+		scanner_instance.emit('recording_saved',
+			band='pmr', index=8, freq=446.0125e6, file_path='/tmp/b.wav',
+			ctcss_hz=None, dcs_code=0o023)
+		scanner_instance.emit('recording_saved',
+			band='pmr', index=9, freq=446.025e6, file_path='/tmp/c.wav',
+			ctcss_hz=None, dcs_code=None)
+
+		assert len(received) == 3
+		assert received[0]['ctcss_hz'] == 136.5 and received[0]['dcs_code'] is None
+		assert received[1]['ctcss_hz'] is None and received[1]['dcs_code'] == 0o023
+		assert received[2]['ctcss_hz'] is None and received[2]['dcs_code'] is None
+
 	def test_channel_state_carries_tone_fields (self, scanner_instance):
 		"""channel_state handlers receive ctcss_hz and dcs_code as kwargs."""
 		received = []

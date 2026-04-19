@@ -419,9 +419,11 @@ The sender emits the following OSC messages:
 
 | Address | When | Arguments |
 | :--- | :--- | :--- |
-| `/radio/state` | Channel turns ON or OFF | `band_name:str, channel_index:int, is_active:int(0/1), snr_db:float` |
-| `/radio/recording` | Recording finalised on disk | `band_name:str, channel_index:int, file_path:str` |
+| `/radio/state` | Channel turns ON or OFF | `band_name:str, channel_index:int, is_active:int(0/1), snr_db:float, ctcss_hz:float, dcs_code:int` |
+| `/radio/recording` | Recording finalised on disk | `band_name:str, channel_index:int, file_path:str, ctcss_hz:float, dcs_code:int` |
 | `/sample/import` | Recording finalised (only if `sampler_host` set) | `file_path:str` |
+
+`ctcss_hz` and `dcs_code` carry any subaudible tone detected on the activation. OSC has no native null, so `0.0` / `0` mean "no tone detected" (valid CTCSS tones start at 67 Hz, and DCS codes are always nonzero, so these sentinels are unambiguous).
 
 Sends are non-blocking UDP (fire-and-forget); transient socket errors are logged as warnings and never raised back into the scanner. See [examples/scan_osc.py](examples/scan_osc.py) for a working script.
 

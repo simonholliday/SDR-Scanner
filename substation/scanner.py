@@ -227,6 +227,12 @@ class RadioScanner:
 		# Latest SNR per channel (updated every processing slice, used by event consumers)
 		self.channel_snr: dict[float, float] = {}
 
+		# Latest CTCSS/DCS tone per channel, populated from the first
+		# demodulated audio block after a channel turns ON and cleared
+		# in _stop_channel_recording after recording_saved carries it
+		# onward.  Value shape: {'ctcss_hz': float | None, 'dcs_code': int | None}.
+		self.channel_tones: dict[float, dict] = {}
+
 		# Stuck channel tracking
 		self.channel_start_times: dict[float, float] = {}
 		self.channel_last_warning_times: dict[float, float] = {}
@@ -360,14 +366,17 @@ class RadioScanner:
 		Events:
 			channel_state       — (band, index, freq, is_active, snr_db, ctcss_hz, dcs_code)
 			recording_started   — (band, index, freq)
-			recording_saved     — (band, index, freq, file_path)
+			recording_saved     — (band, index, freq, file_path, ctcss_hz, dcs_code)
 			recording_discarded — (band, index, freq)
 			noise_floor         — (noise_floor_db, warmup_complete)
 			channel_snr         — (channels: list[dict])
 
 		ctcss_hz / dcs_code on channel_state are populated on ON
 		transitions where demod produced tone info; otherwise both are
-		None.  OFF transitions always carry both as None.
+		None.  OFF transitions always carry both as None.  On
+		recording_saved the tone fields echo whatever was detected
+		during the activation (persisted across the recording), again
+		None if no tone was detected.
 
 		Handlers may be sync or async. How they dispatch depends on the
 		emit() call — events fired with `loop=` are marshalled onto the
@@ -1414,6 +1423,7 @@ class RadioScanner:
 			logger.info(f"Discarded short recording ({duration:.2f}s < {min_dur:.1f}s): {os.path.basename(filepath)}")
 			self.emit('recording_discarded',
 				band=self.band_name, index=ch_idx, freq=channel_freq)
+			self.channel_tones.pop(channel_freq, None)
 			del self.channel_recorders[channel_freq]
 			return
 
@@ -1431,13 +1441,17 @@ class RadioScanner:
 					logger.info(f"Discarded empty recording: {os.path.basename(filepath)}")
 					self.emit('recording_discarded',
 						band=self.band_name, index=ch_idx, freq=channel_freq)
+					self.channel_tones.pop(channel_freq, None)
 					del self.channel_recorders[channel_freq]
 					return
 			except (OSError, ValueError) as exc:
 				logger.debug(f"Empty-check failed for {filepath}: {exc}")
 
+		tone = self.channel_tones.pop(channel_freq, {'ctcss_hz': None, 'dcs_code': None})
+
 		self.emit('recording_saved',
-			band=self.band_name, index=ch_idx, freq=channel_freq, file_path=filepath)
+			band=self.band_name, index=ch_idx, freq=channel_freq, file_path=filepath,
+			ctcss_hz=tone['ctcss_hz'], dcs_code=tone['dcs_code'])
 
 		# Remove from dictionary
 		del self.channel_recorders[channel_freq]
@@ -1740,6 +1754,14 @@ class RadioScanner:
 								rec = self.channel_recorders.get(channel_freq)
 								if rec:
 									rec.set_tone_code(ctcss=ctcss, dcs=dcs)
+
+							# Persist the tone for the rest of the activation
+							# so recording_saved can include it when the
+							# channel goes OFF.
+							self.channel_tones[channel_freq] = {
+								'ctcss_hz': ctcss,
+								'dcs_code': dcs,
+							}
 
 						if not turning_off:
 							self.channel_demod_state[channel_freq] = new_state
