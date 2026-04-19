@@ -10,7 +10,8 @@ class TestEventEmitter:
 		received = []
 		scanner_instance.on('channel_state', lambda **kw: received.append(kw))
 		scanner_instance.emit('channel_state',
-			band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0)
+			band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0,
+			ctcss_hz=None, dcs_code=None)
 		assert len(received) == 1
 		assert received[0]['band'] == 'pmr'
 
@@ -19,11 +20,13 @@ class TestEventEmitter:
 		received = []
 		handler = lambda **kw: received.append(kw)
 		scanner_instance.on('channel_state', handler)
-		scanner_instance.emit('channel_state', band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0)
+		scanner_instance.emit('channel_state', band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0,
+			ctcss_hz=None, dcs_code=None)
 		assert len(received) == 1
 
 		scanner_instance.off('channel_state', handler)
-		scanner_instance.emit('channel_state', band='pmr', index=1, freq=446e6, is_active=False, snr_db=5.0)
+		scanner_instance.emit('channel_state', band='pmr', index=1, freq=446e6, is_active=False, snr_db=5.0,
+			ctcss_hz=None, dcs_code=None)
 		assert len(received) == 1
 
 	def test_multiple_handlers (self, scanner_instance):
@@ -44,19 +47,46 @@ class TestEventEmitter:
 		received = []
 		scanner_instance.on('channel_state', lambda **kw: 1/0)
 		scanner_instance.on('channel_state', lambda **kw: received.append(kw))
-		scanner_instance.emit('channel_state', band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0)
+		scanner_instance.emit('channel_state', band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0,
+			ctcss_hz=None, dcs_code=None)
 		assert len(received) == 1
 
 	def test_backward_compat_add_state_callback (self, scanner_instance):
-		"""add_state_callback still works via the event emitter."""
+		"""add_state_callback still works via the event emitter (tone kwargs are ignored)."""
 		received = []
 		scanner_instance.add_state_callback(
 			lambda band, idx, active, snr: received.append((band, idx, active, snr))
 		)
 		scanner_instance.emit('channel_state',
-			band='pmr', index=3, freq=446e6, is_active=True, snr_db=8.5)
+			band='pmr', index=3, freq=446e6, is_active=True, snr_db=8.5,
+			ctcss_hz=136.5, dcs_code=None)
 		assert len(received) == 1
 		assert received[0] == ('pmr', 3, True, 8.5)
+
+	def test_channel_state_carries_tone_fields (self, scanner_instance):
+		"""channel_state handlers receive ctcss_hz and dcs_code as kwargs."""
+		received = []
+		scanner_instance.on('channel_state', lambda **kw: received.append(kw))
+
+		# ON with a CTCSS tone detected
+		scanner_instance.emit('channel_state',
+			band='pmr', index=7, freq=446e6, is_active=True, snr_db=12.0,
+			ctcss_hz=136.5, dcs_code=None)
+
+		# ON with a DCS code detected
+		scanner_instance.emit('channel_state',
+			band='pmr', index=8, freq=446.0125e6, is_active=True, snr_db=9.0,
+			ctcss_hz=None, dcs_code=0o023)
+
+		# OFF — tone fields must be None
+		scanner_instance.emit('channel_state',
+			band='pmr', index=7, freq=446e6, is_active=False, snr_db=1.0,
+			ctcss_hz=None, dcs_code=None)
+
+		assert len(received) == 3
+		assert received[0]['ctcss_hz'] == 136.5 and received[0]['dcs_code'] is None
+		assert received[1]['ctcss_hz'] is None and received[1]['dcs_code'] == 0o023
+		assert received[2]['ctcss_hz'] is None and received[2]['dcs_code'] is None
 
 	def test_backward_compat_add_recording_callback (self, scanner_instance):
 		"""add_recording_callback still works via the event emitter."""
@@ -78,7 +108,8 @@ class TestEventEmitter:
 		async def runner ():
 			loop = asyncio.get_running_loop()
 			scanner_instance.emit('channel_state', loop=loop,
-				band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0)
+				band='pmr', index=1, freq=446e6, is_active=True, snr_db=10.0,
+				ctcss_hz=None, dcs_code=None)
 			# call_soon_threadsafe schedules for the next loop tick — yield so it runs.
 			await asyncio.sleep(0)
 

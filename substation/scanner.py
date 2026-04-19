@@ -358,12 +358,16 @@ class RadioScanner:
 		"""Subscribe to a scanner event.
 
 		Events:
-			channel_state       — (band, index, freq, is_active, snr_db)
+			channel_state       — (band, index, freq, is_active, snr_db, ctcss_hz, dcs_code)
 			recording_started   — (band, index, freq)
 			recording_saved     — (band, index, freq, file_path)
 			recording_discarded — (band, index, freq)
 			noise_floor         — (noise_floor_db, warmup_complete)
 			channel_snr         — (channels: list[dict])
+
+		ctcss_hz / dcs_code on channel_state are populated on ON
+		transitions where demod produced tone info; otherwise both are
+		None.  OFF transitions always carry both as None.
 
 		Handlers may be sync or async. How they dispatch depends on the
 		emit() call — events fired with `loop=` are marshalled onto the
@@ -1131,10 +1135,9 @@ class RadioScanner:
 
 				self._start_channel_recording(channel_freq, channel_index, snr_db, loop)
 
-			# Emit channel state event
-			self.emit('channel_state', loop=loop,
-				band=self.band_name, index=channel_index, freq=channel_freq,
-				is_active=is_active, snr_db=snr_db)
+			# Note: channel_state event is emitted by _process_samples
+			# after the demod step, so it can carry CTCSS/DCS tone info
+			# detected from the first demodulated audio block.
 
 		return trim_start, trim_end, sample_offset, turning_on, turning_off
 
@@ -1575,6 +1578,11 @@ class RadioScanner:
 				self.channel_snr[channel_freq] = snr_db
 				current_state = self.channel_states[channel_freq]
 
+				# Demod output for this slice — may be populated below.
+				# Initialised here so it's always in scope when the
+				# channel_state event is emitted at the end of the loop.
+				new_state: dict | None = None
+
 				# Stuck channel detection: warn if PTT seems stuck or interference is constant.
 				# Rate-limited to one warning per 60 seconds per channel to avoid flooding.
 				if current_state and self.config.scanner.stuck_channel_threshold_seconds:
@@ -1752,6 +1760,24 @@ class RadioScanner:
 					self.channel_audio_last_active.pop(channel_freq, None)
 					if channel_freq in self.channel_recorders:
 						asyncio.run_coroutine_threadsafe(self._stop_channel_recording(channel_freq), loop)
+
+				# Emit channel_state transition event here — after demod
+				# has run (on ON) — so detected CTCSS/DCS can ride along
+				# as a property of the activation rather than a separate
+				# notification arriving later.  OFF transitions always
+				# carry tone fields as None.
+				if turning_on or turning_off:
+					ctcss_hz: float | None = None
+					dcs_code: int | None = None
+
+					if turning_on and new_state:
+						ctcss_hz = new_state.get('detected_ctcss')
+						dcs_code = new_state.get('detected_dcs')
+
+					self.emit('channel_state', loop=loop,
+						band=self.band_name, index=idx, freq=channel_freq,
+						is_active=is_active, snr_db=snr_db,
+						ctcss_hz=ctcss_hz, dcs_code=dcs_code)
 
 			# Emit per-channel SNR snapshot (every slice, after transitions).
 			# Fields match the Supervisor spec: frequency_mhz, duration_active_s.
